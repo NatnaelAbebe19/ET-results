@@ -62,6 +62,28 @@ def save_last_results(results: dict[str, dict]):
 
 # ─── Periodic Check Job ─────────────────────────────────────────────────────
 
+def seed_initial_state():
+    """
+    If there is no saved state (first run / fresh deploy), scrape the page
+    once and save all current results WITHOUT sending any notifications.
+    This prevents spamming users with all existing results on startup.
+    """
+    last_results = load_last_results()
+    if last_results:
+        logger.info(f"📂 Found existing state with {len(last_results)} tracked results.")
+        return  # Already have state, nothing to seed
+
+    logger.info("🌱 First run detected — seeding initial state (no notifications)...")
+    current_results = fetch_results()
+    if current_results:
+        all_results = {r["id"]: r for r in current_results}
+        save_last_results(all_results)
+        logger.info(f"✅ Saved {len(all_results)} existing results as baseline. "
+                     "Only NEW results from now on will trigger notifications.")
+    else:
+        logger.warning("Could not fetch results for seeding. Will retry on next check.")
+
+
 async def check_for_new_results(app: Application):
     """
     Scheduled job: scrape the results page, compare with saved state,
@@ -75,8 +97,15 @@ async def check_for_new_results(app: Application):
         return
 
     last_results = load_last_results()
-    new_results = []
 
+    # Safety: if no saved state exists yet, save and skip (don't spam)
+    if not last_results:
+        all_results = {r["id"]: r for r in current_results}
+        save_last_results(all_results)
+        logger.info(f"📂 No prior state found. Saved {len(all_results)} results as baseline.")
+        return
+
+    new_results = []
     for result in current_results:
         if result["id"] not in last_results:
             new_results.append(result)
@@ -89,9 +118,10 @@ async def check_for_new_results(app: Application):
             logger.warning("No subscribers yet. New results won't be sent to anyone.")
         else:
             for result in new_results:
+                logger.info(f"📤 Sending notification for: {result['position'][:50]}")
                 for chat_id in subscribers:
                     await send_notification(app, chat_id, result)
-                    await asyncio.sleep(0.3)  # Rate limiting
+                    await asyncio.sleep(0.5)  # Rate limiting
 
         # Update saved state with ALL current results
         all_results = {r["id"]: r for r in current_results}
@@ -167,11 +197,10 @@ async def main():
     )
     scheduler.start()
 
-    # Run an initial check right away
-    logger.info("Running initial check...")
-    await check_for_new_results(app)
+    # Seed initial state (saves baseline without sending notifications)
+    seed_initial_state()
 
-    logger.info(f"⏰ Next check in {CHECK_INTERVAL_SECONDS} seconds. Press Ctrl+C to stop.")
+    logger.info(f"⏰ Checking every {CHECK_INTERVAL_SECONDS} seconds. Press Ctrl+C to stop.")
 
     # Keep running until interrupted
     stop_event = asyncio.Event()
