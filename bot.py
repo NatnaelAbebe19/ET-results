@@ -219,4 +219,19 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("latest", latest_command))
     app.add_handler(CommandHandler("help", help_command))
 
+    # Register a global error handler so transient API errors (Conflict, NetworkError)
+    # are logged cleanly instead of printing full tracebacks on every retry.
+    from telegram.ext import TypeHandler
+    async def _error_handler(update, context):
+        from telegram.error import Conflict, NetworkError, TimedOut
+        err = context.error
+        if isinstance(err, Conflict):
+            logger.warning("⚠️  Conflict: another bot instance is still active. Will retry...")
+        elif isinstance(err, (NetworkError, TimedOut)):
+            logger.warning(f"⚠️  Transient network error (will retry): {err}")
+        else:
+            logger.error(f"Unhandled error: {err}", exc_info=err)
+
+    app.add_error_handler(_error_handler)
+
     return app

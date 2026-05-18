@@ -205,6 +205,17 @@ async def main():
     await app.initialize()
     await app.start()
 
+    # On platforms like Render, a previous instance may still be holding the
+    # polling connection when a new deploy starts. Drop any active webhook and
+    # wait a few seconds to let the old instance release the getUpdates lock
+    # before we start polling, avoiding the 409 Conflict error.
+    logger.info("🔄 Clearing any existing webhook / active polling session...")
+    try:
+        await app.bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logger.warning(f"delete_webhook failed (non-fatal): {e}")
+    await asyncio.sleep(5)  # Give the old instance time to shut down
+
     # Start polling for Telegram messages
     await app.updater.start_polling(drop_pending_updates=True)
 
