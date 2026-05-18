@@ -34,6 +34,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("et_results_bot")
 
+# ─── In-Memory Sent Guard ────────────────────────────────────────────────────
+# Tracks result IDs already sent this session to prevent duplicate notifications
+# even if the file state hasn't been flushed yet.
+_already_notified: set[str] = set()
+
 
 # ─── State Management ───────────────────────────────────────────────────────
 
@@ -67,10 +72,15 @@ def seed_initial_state():
     If there is no saved state (first run / fresh deploy), scrape the page
     once and save all current results WITHOUT sending any notifications.
     This prevents spamming users with all existing results on startup.
+    Also pre-populates the in-memory sent guard so existing results are
+    never treated as new even if the file state is stale.
     """
+    global _already_notified
     last_results = load_last_results()
     if last_results:
         logger.info(f"📂 Found existing state with {len(last_results)} tracked results.")
+        # Pre-populate the in-memory guard from saved state
+        _already_notified.update(last_results.keys())
         return  # Already have state, nothing to seed
 
     logger.info("🌱 First run detected — seeding initial state (no notifications)...")
@@ -78,6 +88,7 @@ def seed_initial_state():
     if current_results:
         all_results = {r["id"]: r for r in current_results}
         save_last_results(all_results)
+        _already_notified.update(all_results.keys())
         logger.info(f"✅ Saved {len(all_results)} existing results as baseline. "
                      "Only NEW results from now on will trigger notifications.")
     else:
@@ -88,7 +99,12 @@ async def check_for_new_results(app: Application):
     """
     Scheduled job: scrape the results page, compare with saved state,
     and send notifications for any new entries.
+
+    Guards against duplicate sends using both the persisted file state
+    AND an in-memory set (_already_notified) that survives across cycles
+    within the same session.
     """
+    global _already_notified
     logger.info("🔍 Checking for new results...")
 
     current_results = fetch_results()
@@ -102,34 +118,47 @@ async def check_for_new_results(app: Application):
     if not last_results:
         all_results = {r["id"]: r for r in current_results}
         save_last_results(all_results)
+        _already_notified.update(all_results.keys())
         logger.info(f"📂 No prior state found. Saved {len(all_results)} results as baseline.")
         return
 
-    new_results = []
-    for result in current_results:
-        if result["id"] not in last_results:
-            new_results.append(result)
+    # Find results that are new in BOTH the file state AND the in-memory guard.
+    # The in-memory guard catches duplicates within the same session even if the
+    # file hasn't been written yet (race condition protection).
+    new_results = [
+        r for r in current_results
+        if r["id"] not in last_results and r["id"] not in _already_notified
+    ]
 
     if new_results:
         logger.info(f"🆕 Found {len(new_results)} NEW result(s)!")
-        subscribers = load_subscribers()
 
+        # Mark as notified in-memory BEFORE sending so that if the bot restarts
+        # mid-send, we don't re-send on the next cycle.
+        for result in new_results:
+            _already_notified.add(result["id"])
+
+        # Persist the updated state immediately so a crash/restart won't re-send.
+        all_results = {r["id"]: r for r in current_results}
+        save_last_results(all_results)
+        logger.info(f"✅ State saved. Total results tracked: {len(all_results)}")
+
+        subscribers = load_subscribers()
         if not subscribers:
             logger.warning("No subscribers yet. New results won't be sent to anyone.")
         else:
+            logger.info(f"📣 Sending to {len(subscribers)} subscriber(s)...")
             for result in new_results:
                 logger.info(f"📤 Sending notification for: {result['position'][:50]}")
-                for chat_id in subscribers:
-                    await send_notification(app, chat_id, result)
-                    await asyncio.sleep(0.5)  # Rate limiting
-
-        # Update saved state with ALL current results
-        all_results = {r["id"]: r for r in current_results}
-        save_last_results(all_results)
-        logger.info(f"✅ State updated. Total results tracked: {len(all_results)}")
+                for chat_id in list(subscribers):  # snapshot to avoid mutation during iteration
+                    try:
+                        await send_notification(app, chat_id, result)
+                    except Exception as e:
+                        logger.error(f"Unexpected error sending to {chat_id}: {e}")
+                    await asyncio.sleep(0.05)  # Telegram rate limit: ~20 msg/s per bot
     else:
         logger.info("No new results found.")
-        # Still update the state in case results were removed
+        # Still update the state in case results were removed from the page
         all_results = {r["id"]: r for r in current_results}
         save_last_results(all_results)
 
