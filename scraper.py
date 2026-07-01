@@ -14,6 +14,7 @@ Page structure:
 
 import hashlib
 import logging
+import re
 import requests
 from bs4 import BeautifulSoup, Tag
 
@@ -137,12 +138,37 @@ def _parse_accordion_card(card: Tag) -> dict | None:
                 if len(body_text) > 50:
                     description = body_text[:500]
 
+        # --- Extract date_time ---
+        date_time = ""
+        if panel_body:
+            panel_text = panel_body.get_text(" ", strip=True)
+            dt_match = re.search(r"DATE\s*&\s*TIME\s*:\s*(.+?)(?:\n|$)", panel_text, re.IGNORECASE)
+            if dt_match:
+                date_time = dt_match.group(1).strip()
+
+        # --- Extract candidates ---
+        candidates = []
+        if panel_body:
+            panel_text = panel_body.get_text("\n", strip=True)
+            in_list = False
+            for line in panel_text.splitlines():
+                line = line.strip()
+                if re.search(r"candidate[_\s]*list", line, re.IGNORECASE):
+                    in_list = True
+                    continue
+                if in_list:
+                    match = re.match(r"^(\d+)\s+(.+)", line)
+                    if match:
+                        candidates.append({"no": match.group(1), "name": match.group(2).strip()})
+
         return {
             "id": _generate_id(position, announcement),
             "position": position,
             "location": location,
             "announcement": announcement,
             "description": description,
+            "date_time": date_time,
+            "candidates": candidates,
         }
     except Exception as e:
         logger.warning(f"Failed to parse accordion card: {e}")

@@ -24,6 +24,7 @@ from config import (
 )
 from scraper import fetch_results
 from bot import build_application, load_subscribers, send_notification
+from result_parser import save_result
 
 # ─── Logging Setup ───────────────────────────────────────────────────────────
 
@@ -89,6 +90,10 @@ def seed_initial_state():
         all_results = {r["id"]: r for r in current_results}
         save_last_results(all_results)
         _already_notified.update(all_results.keys())
+        # Persist each baseline result's full data (candidates included) immediately,
+        # so it's never lost even if ET later removes it from the website.
+        for result in current_results:
+            save_result(result)
         logger.info(f"✅ Saved {len(all_results)} existing results as baseline. "
                      "Only NEW results from now on will trigger notifications.")
     else:
@@ -113,6 +118,12 @@ async def check_for_new_results(app: Application):
         return
 
     last_results = load_last_results()
+
+    # Persist every currently-live result's full data (candidates included) right away.
+    # This is intentionally unconditional so candidate lists are captured instantly and
+    # survive even if ET later edits or removes the announcement from the website.
+    for result in current_results:
+        save_result(result)
 
     # Safety: if no saved state exists yet, save and skip (don't spam)
     if not last_results:
@@ -170,10 +181,44 @@ async def handle_health_check(request):
     return web.Response(text="Bot is running! ✈️")
 
 
+async def handle_get_result_api(request):
+    """API endpoint to return JSON data for a specific result ID."""
+    result_id = request.match_info['id']
+    data_path = os.path.join(DATA_DIR, "announcements", f"{result_id}.json")
+    
+    if not os.path.exists(data_path):
+        return web.json_response({"error": "Result not found"}, status=404)
+        
+    with open(data_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return web.json_response(data)
+
+
+async def handle_serve_viewer(request):
+    """Serve the index.html viewer for any /results/{id} route."""
+    viewer_path = os.path.join(os.getcwd(), "web", "index.html")
+    if not os.path.exists(viewer_path):
+        return web.Response(text="Viewer template not found", status=500)
+    return web.FileResponse(viewer_path)
+
+
 async def start_web_server():
-    """Start a dummy web server to keep the bot alive on free hosting."""
+    """Start a web server to keep the bot alive and serve result pages."""
     app = web.Application()
+    
+    # ─── Routes ──────────────────────────────────────────────────────────
     app.router.add_get("/", handle_health_check)
+    
+    # API for the template to fetch candidate data
+    app.router.add_get("/api/results/{id}", handle_get_result_api)
+    
+    # The viewer page (served for all result IDs)
+    app.router.add_get("/results/{id}", handle_serve_viewer)
+    
+    # Static files (CSS, JS)
+    static_path = os.path.join(os.getcwd(), "web")
+    app.router.add_static("/static/", static_path)
+    
     runner = web.AppRunner(app)
     await runner.setup()
     

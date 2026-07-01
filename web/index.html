@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ET Results - Candidate List</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    
+    <main class="container">
+        <header class="header animate-in">
+            <div class="logo">
+                <span class="logo-icon">✈️</span>
+                <h1>Ethiopian <span class="accent">Aviation</span></h1>
+            </div>
+            <div class="announcement-badge" id="announcement-type">Loading...</div>
+        </header>
+
+        <section class="result-card animate-in delay-1">
+            <div class="card-header">
+                <h2 id="position-title">Position Title</h2>
+                <div class="meta">
+                    <div class="meta-item">
+                        <span class="icon">📍</span>
+                        <span id="location-text">Location</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="icon">🕒</span>
+                        <span id="date-time-text">Date & Time</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="description" id="description-text">
+                <!-- Description will be injected here -->
+            </div>
+        </section>
+
+        <section class="candidates-section animate-in delay-2">
+            <div class="section-header">
+                <h3>Qualified Candidates</h3>
+                <span class="count-badge" id="candidate-count">0</span>
+            </div>
+            
+            <div class="search-bar">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="candidate-search" placeholder="Search for your name...">
+            </div>
+
+            <div class="candidates-table-container">
+                <table class="candidates-table">
+                    <thead>
+                        <tr>
+                            <th>No.</th>
+                            <th>Full Name</th>
+                        </tr>
+                    </thead>
+                    <tbody id="candidates-list">
+                        <!-- Candidates will be injected here -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <footer class="footer animate-in delay-3">
+            <p>© 2026 Ethiopian Airlines Group. All rights reserved.</p>
+            <p class="disclaimer">Please arrive on time with proper business attire.</p>
+        </footer>
+    </main>
+
+    <script>
+        const resultId = window.location.pathname.split('/').pop();
+        const candidatesList = document.getElementById('candidates-list');
+        const searchInput = document.getElementById('candidate-search');
+        let allCandidates = [];
+
+        async function loadData() {
+            try {
+                const response = await fetch(`/api/results/${resultId}`);
+                if (!response.ok) throw new Error('Result not found');
+                const data = await response.json();
+
+                document.title = `${data.position} - Results`;
+                document.getElementById('position-title').textContent = data.position;
+                document.getElementById('location-text').textContent = data.location;
+                document.getElementById('date-time-text').textContent = data.date_time;
+                document.getElementById('announcement-type').textContent = data.announcement;
+                document.getElementById('candidate-count').textContent = data.candidates.length;
+                document.getElementById('description-text').innerHTML = data.description.replace(/\n/g, '<br>');
+
+                allCandidates = data.candidates;
+                renderCandidates(allCandidates);
+            } catch (err) {
+                document.body.innerHTML = `<div class="error-msg"><h1>404</h1><p>Announcement Not Found</p><a href="/">Return Home</a></div>`;
+            }
+        }
+
+        function renderCandidates(candidates) {
+            candidatesList.innerHTML = '';
+            candidates.forEach(c => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="col-no">${c.no}</td>
+                    <td class="col-name">${c.name}</td>
+                `;
+                candidatesList.appendChild(row);
+            });
+        }
+
+        searchInput.addEventListener('input', (e) => {
+            const term = e.target.value.toLowerCase();
+            const filtered = allCandidates.filter(c => c.name.toLowerCase().includes(term));
+            renderCandidates(filtered);
+        });
+
+        loadData();
+    </script>
+</body>
+</html>

@@ -1,0 +1,280 @@
+:root {
+    --primary: #c9930f; /* Ethiopian Gold-ish */
+    --primary-dark: #a1760c;
+    --secondary: #006b3f; /* Ethiopian Green */
+    --dark: #0f172a;
+    --light: #f8fafc;
+    --glass: rgba(255, 255, 255, 0.03);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --accent-bg: #1e293b;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: var(--dark);
+    color: var(--light);
+    line-height: 1.6;
+    overflow-x: hidden;
+    min-height: 100vh;
+}
+
+.glass-bg {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle at 20% 20%, rgba(201, 147, 15, 0.1) 0%, transparent 40%),
+                radial-gradient(circle at 80% 80%, rgba(0, 107, 63, 0.1) 0%, transparent 40%);
+    z-index: -1;
+}
+
+.container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+}
+
+/* Typography */
+h1, h2, h3 {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 800;
+}
+
+.accent {
+    color: var(--primary);
+}
+
+/* Header */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 3rem;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.logo h1 {
+    font-size: 1.5rem;
+    letter-spacing: -0.02em;
+}
+
+.logo-icon {
+    font-size: 2rem;
+}
+
+.announcement-badge {
+    background: var(--primary);
+    color: var(--dark);
+    padding: 0.5rem 1rem;
+    border-radius: 2rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    box-shadow: 0 4px 15px rgba(201, 147, 15, 0.3);
+}
+
+/* Result Card */
+.result-card {
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: 1.5rem;
+    padding: 2.5rem;
+    backdrop-filter: blur(20px);
+    margin-bottom: 2rem;
+}
+
+.card-header h2 {
+    font-size: 2.25rem;
+    margin-bottom: 1rem;
+    line-height: 1.1;
+}
+
+.meta {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+    color: #94a3b8;
+    font-size: 0.9rem;
+}
+
+.meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.description {
+    font-size: 1rem;
+    color: #cbd5e1;
+    border-top: 1px solid var(--glass-border);
+    padding-top: 1.5rem;
+}
+
+/* Candidates Section */
+.candidates-section {
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: 1.5rem;
+    padding: 2rem;
+    backdrop-filter: blur(20px);
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.count-badge {
+    background: var(--accent-bg);
+    color: var(--primary);
+    padding: 0.2rem 0.8rem;
+    border-radius: 0.5rem;
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+/* Search Bar */
+.search-bar {
+    position: relative;
+    margin-bottom: 1.5rem;
+}
+
+.search-icon {
+    position: absolute;
+    left: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    opacity: 0.5;
+}
+
+.search-bar input {
+    width: 100%;
+    padding: 1rem 1rem 1rem 3rem;
+    background: var(--accent-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 0.75rem;
+    color: white;
+    font-family: inherit;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+}
+
+.search-bar input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 4px rgba(201, 147, 15, 0.1);
+}
+
+/* Table */
+.candidates-table-container {
+    max-height: 600px;
+    overflow-y: auto;
+    border-radius: 0.75rem;
+}
+
+.candidates-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+}
+
+.candidates-table th {
+    position: sticky;
+    top: 0;
+    background: var(--accent-bg);
+    padding: 1rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+}
+
+.candidates-table td {
+    padding: 1rem;
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.col-no {
+    width: 60px;
+    color: #64748b;
+    font-weight: 600;
+}
+
+.candidates-table tr:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+/* Footer */
+.footer {
+    padding: 3rem 0;
+    text-align: center;
+    color: #64748b;
+    font-size: 0.85rem;
+}
+
+.disclaimer {
+    margin-top: 0.5rem;
+    color: #94a3b8;
+    font-style: italic;
+}
+
+/* Animations */
+.animate-in {
+    opacity: 0;
+    transform: translateY(20px);
+    animation: fadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.delay-1 { animation-delay: 0.1s; }
+.delay-2 { animation-delay: 0.2s; }
+.delay-3 { animation-delay: 0.3s; }
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.error-msg {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+}
+
+.error-msg h1 { font-size: 6rem; color: var(--primary); }
+
+/* Responsive */
+@media (max-width: 640px) {
+    .header { flex-direction: column; gap: 1rem; text-align: center; }
+    .result-card { padding: 1.5rem; }
+    .card-header h2 { font-size: 1.75rem; }
+    .meta { flex-direction: column; gap: 0.5rem; }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: var(--dark); }
+::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }

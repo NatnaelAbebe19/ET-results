@@ -14,7 +14,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import TELEGRAM_BOT_TOKEN, SUBSCRIBERS_FILE, DATA_DIR
+from config import TELEGRAM_BOT_TOKEN, SUBSCRIBERS_FILE, DATA_DIR, BASE_URL
 from scraper import fetch_results
 
 logger = logging.getLogger(__name__)
@@ -53,17 +53,20 @@ def format_result_message(result: dict) -> str:
     msg = "✈️ *NEW RESULT ANNOUNCEMENT* ✈️\n\n"
     msg += f"📋 *Position:*\n{_escape_md(result['position'])}\n\n"
 
-    if result.get("location"):
-        msg += f"📍 *Location:*\n{_escape_md(result['location'])}\n\n"
 
     if result.get("announcement"):
         msg += f"📢 *Type:*\n{_escape_md(result['announcement'])}\n\n"
 
+    if result.get("date_time"):
+        msg += f"🗓️ *Date & Time:*\n{_escape_md(result['date_time'])}\n\n"
+
     if result.get("description"):
-        desc = result["description"][:400]
+        lines = [l for l in result["description"].splitlines() if l.strip()]
+        desc = "\n".join(lines[:2])
         msg += f"📝 *Details:*\n{_escape_md(desc)}\n\n"
 
-    msg += f"🔗 [View Full Details](https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results)"
+    viewer_url = f"{BASE_URL}/results/{result['id']}"
+    msg += f"🔗 [View Candidate List]({viewer_url})"
     return msg
 
 
