@@ -33,7 +33,11 @@ def parse_announcement(text: str):
     # Special check for multiple Location/Position labels in the provided text
     # The user's text has labels twice. We take the first one or clean it up.
     
-    dt_match = re.search(r"DATE & TIME:\s*(.*)", text, re.IGNORECASE)
+    dt_match = re.search(
+        r"DATE & TIME:\s*(.+?)(?=\n|\s+AND,?\s+IF\s+YOUR\s+NAME|\s+PLEASE\s+NOTE|\s*Candidate_List\s*:|$)",
+        text,
+        re.IGNORECASE,
+    )
     if dt_match:
         result["date_time"] = dt_match.group(1).strip()
 

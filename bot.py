@@ -57,14 +57,6 @@ def format_result_message(result: dict) -> str:
     if result.get("announcement"):
         msg += f"📢 *Type:*\n{_escape_md(result['announcement'])}\n\n"
 
-    if result.get("date_time"):
-        msg += f"🗓️ *Date & Time:*\n{_escape_md(result['date_time'])}\n\n"
-
-    if result.get("description"):
-        lines = [l for l in result["description"].splitlines() if l.strip()]
-        desc = "\n".join(lines[:2])
-        msg += f"📝 *Details:*\n{_escape_md(desc)}\n\n"
-
     viewer_url = f"{BASE_URL}/results/{result['id']}"
     msg += f"🔗 [View Candidate List]({viewer_url})"
     return msg

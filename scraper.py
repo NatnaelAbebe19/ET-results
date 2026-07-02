@@ -142,7 +142,14 @@ def _parse_accordion_card(card: Tag) -> dict | None:
         date_time = ""
         if panel_body:
             panel_text = panel_body.get_text(" ", strip=True)
-            dt_match = re.search(r"DATE\s*&\s*TIME\s*:\s*(.+?)(?:\n|$)", panel_text, re.IGNORECASE)
+            # Non-greedy capture stopping at the standard boilerplate that follows the
+            # date/time in ET announcements (no real newline separates them in the HTML,
+            # so a plain "(.+?)$" would swallow the disclaimer and candidate list too).
+            dt_match = re.search(
+                r"DATE\s*&\s*TIME\s*:\s*(.+?)(?=\s+AND,?\s+IF\s+YOUR\s+NAME|\s+PLEASE\s+NOTE|\s+CANDIDATE[_\s]*LIST|$)",
+                panel_text,
+                re.IGNORECASE,
+            )
             if dt_match:
                 date_time = dt_match.group(1).strip()
 
