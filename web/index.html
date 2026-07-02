@@ -16,32 +16,15 @@
         <header class="header animate-in">
             <div class="logo">
                 <span class="logo-icon">✈️</span>
-                <h1>Ethiopian <span class="accent">Aviation</span></h1>
+                <h1>Candidates <span class="accent">List</span></h1>
             </div>
-            <div class="announcement-badge" id="announcement-type">Loading...</div>
+            <a href="https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results" target="_blank" class="visit-website-btn">
+                <span>Visit Website</span>
+                <span class="icon">↗️</span>
+            </a>
         </header>
 
-        <section class="result-card animate-in delay-1">
-            <div class="card-header">
-                <h2 id="position-title">Position Title</h2>
-                <div class="meta">
-                    <div class="meta-item">
-                        <span class="icon">📍</span>
-                        <span id="location-text">Location</span>
-                    </div>
-                    <div class="meta-item">
-                        <span class="icon">🕒</span>
-                        <span id="date-time-text">Date & Time</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="description" id="description-text">
-                <!-- Description will be injected here -->
-            </div>
-        </section>
-
-        <section class="candidates-section animate-in delay-2">
+        <section class="candidates-section animate-in delay-1">
             <div class="section-header">
                 <h3>Qualified Candidates</h3>
                 <span class="count-badge" id="candidate-count">0</span>
@@ -67,7 +50,7 @@
             </div>
         </section>
 
-        <footer class="footer animate-in delay-3">
+        <footer class="footer animate-in delay-2">
             <p>© 2026 Ethiopian Airlines Group. All rights reserved.</p>
             <p class="disclaimer">Please arrive on time with proper business attire.</p>
         </footer>
@@ -85,13 +68,8 @@
                 if (!response.ok) throw new Error('Result not found');
                 const data = await response.json();
 
-                document.title = `${data.position} - Results`;
-                document.getElementById('position-title').textContent = data.position;
-                document.getElementById('location-text').textContent = data.location;
-                document.getElementById('date-time-text').textContent = data.date_time;
-                document.getElementById('announcement-type').textContent = data.announcement;
+                document.title = `${data.position} - Candidates`;
                 document.getElementById('candidate-count').textContent = data.candidates.length;
-                document.getElementById('description-text').innerHTML = data.description.replace(/\n/g, '<br>');
 
                 allCandidates = data.candidates;
                 renderCandidates(allCandidates);
@@ -102,6 +80,10 @@
 
         function renderCandidates(candidates) {
             candidatesList.innerHTML = '';
+            if (candidates.length === 0) {
+                candidatesList.innerHTML = '<tr><td colspan="2" class="no-results">No candidates found</td></tr>';
+                return;
+            }
             candidates.forEach(c => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
@@ -122,3 +104,4 @@
     </script>
 </body>
 </html>
+

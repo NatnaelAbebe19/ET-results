@@ -156,17 +156,35 @@ def _parse_accordion_card(card: Tag) -> dict | None:
         # --- Extract candidates ---
         candidates = []
         if panel_body:
-            panel_text = panel_body.get_text("\n", strip=True)
-            in_list = False
-            for line in panel_text.splitlines():
-                line = line.strip()
-                if re.search(r"candidate[_\s]*list", line, re.IGNORECASE):
-                    in_list = True
-                    continue
-                if in_list:
-                    match = re.match(r"^(\d+)\s+(.+)", line)
-                    if match:
-                        candidates.append({"no": match.group(1), "name": match.group(2).strip()})
+            # Check for Table-based candidates list (preferred, since ET uses table for lists now)
+            table = panel_body.find("table")
+            if table:
+                for row in table.find_all("tr"):
+                    cols = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
+                    if cols and len(cols) >= 2:
+                        no_str = cols[0]
+                        name_str = cols[1]
+                        # Skip if it is the header row
+                        if no_str.lower() in ("no", "no.", "s.n", "s.no") or "name" in name_str.lower():
+                            continue
+                        # Verify the first column represents a number
+                        if re.match(r"^\d+$", no_str):
+                            candidates.append({"no": no_str, "name": name_str})
+
+            # Fallback to Text-based parser if no candidates were found via table
+            if not candidates:
+                panel_text = panel_body.get_text("\n", strip=True)
+                in_list = False
+                for line in panel_text.splitlines():
+                    line = line.strip()
+                    if re.search(r"candidate[_\s]*list", line, re.IGNORECASE):
+                        in_list = True
+                        continue
+                    if in_list:
+                        match = re.match(r"^(\d+)\s+(.+)", line)
+                        if match:
+                            candidates.append({"no": match.group(1), "name": match.group(2).strip()})
+
 
         return {
             "id": _generate_id(position, announcement),

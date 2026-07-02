@@ -278,3 +278,37 @@ h1, h2, h3 {
 ::-webkit-scrollbar-track { background: var(--dark); }
 ::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 10px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.15); }
+
+/* Visit Website Button */
+.visit-website-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    color: var(--light);
+    padding: 0.5rem 1rem;
+    border-radius: 0.75rem;
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    backdrop-filter: blur(10px);
+}
+
+.visit-website-btn:hover {
+    background: var(--primary);
+    color: var(--dark);
+    border-color: var(--primary);
+    box-shadow: 0 4px 15px rgba(201, 147, 15, 0.3);
+    transform: translateY(-2px);
+}
+
+/* No Results State */
+.no-results {
+    text-align: center;
+    color: #64748b;
+    padding: 2rem !important;
+    font-style: italic;
+}
+

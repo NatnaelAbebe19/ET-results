@@ -7,7 +7,7 @@ import json
 import logging
 import os
 
-from telegram import Update
+from telegram import Update, WebAppInfo, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -53,12 +53,9 @@ def format_result_message(result: dict) -> str:
     msg = "✈️ *NEW RESULT ANNOUNCEMENT* ✈️\n\n"
     msg += f"📋 *Position:*\n{_escape_md(result['position'])}\n\n"
 
-
     if result.get("announcement"):
         msg += f"📢 *Type:*\n{_escape_md(result['announcement'])}\n\n"
 
-    viewer_url = f"{BASE_URL}/results/{result['id']}"
-    msg += f"🔗 [View Candidate List]({viewer_url})"
     return msg
 
 
@@ -161,11 +158,25 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show details of the first (most recent) result
     try:
         msg = format_result_message(results[0])
-        await update.message.reply_text(msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
-    except Exception:
+        viewer_url = f"{BASE_URL}/results/{results[0]['id']}"
+        keyboard = [
+            [
+                InlineKeyboardButton("View Candidates", web_app=WebAppInfo(url=viewer_url)),
+                InlineKeyboardButton("Visit Website", url="https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            msg, 
+            parse_mode="MarkdownV2", 
+            reply_markup=reply_markup,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"Failed to send /latest format: {e}")
         r = results[0]
         await update.message.reply_text(
-            f"Latest Result:\n\nPosition: {r['position']}\nLocation: {r['location']}\n\n"
+            f"Latest Result:\n\nPosition: {r['position']}\nType: {r.get('announcement', 'N/A')}\n\n"
             f"View: https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results"
         )
 
@@ -181,10 +192,19 @@ async def send_notification(app: Application, chat_id: int, result: dict):
     """Send a new result notification to a specific chat."""
     try:
         msg = format_result_message(result)
+        viewer_url = f"{BASE_URL}/results/{result['id']}"
+        keyboard = [
+            [
+                InlineKeyboardButton("View Candidates", web_app=WebAppInfo(url=viewer_url)),
+                InlineKeyboardButton("Visit Website", url="https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await app.bot.send_message(
             chat_id=chat_id,
             text=msg,
             parse_mode="MarkdownV2",
+            reply_markup=reply_markup,
             disable_web_page_preview=True,
         )
     except Exception as e:
@@ -196,7 +216,7 @@ async def send_notification(app: Application, chat_id: int, result: dict):
                 text=(
                     f"🆕 New Result!\n\n"
                     f"Position: {result['position']}\n"
-                    f"Location: {result.get('location', 'N/A')}\n\n"
+                    f"Type: {result.get('announcement', 'N/A')}\n\n"
                     f"View: https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results"
                 ),
             )
