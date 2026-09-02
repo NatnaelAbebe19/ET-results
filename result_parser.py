@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from config import DATA_DIR
+from database import save_announcement
 
 def parse_announcement(text: str):
     """
@@ -71,6 +72,9 @@ def parse_announcement(text: str):
     return result
 
 def save_result(result: dict, data_dir: str = None):
+    # Save to Neon PostgreSQL
+    save_announcement(result)
+
     if data_dir is None:
         data_dir = os.path.join(DATA_DIR, "announcements")
     os.makedirs(data_dir, exist_ok=True)

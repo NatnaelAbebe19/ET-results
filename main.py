@@ -19,12 +19,18 @@ from telegram.ext import Application
 from config import (
     CHECK_INTERVAL_SECONDS,
     DATA_DIR,
-    LAST_RESULTS_FILE,
     TELEGRAM_BOT_TOKEN,
 )
 from scraper import fetch_results
 from bot import build_application, load_subscribers, send_notification
 from result_parser import save_result
+from database import (
+    init_db,
+    migrate_local_data,
+    get_last_results,
+    save_last_results as db_save_last_results,
+    get_announcement,
+)
 
 # ─── Logging Setup ───────────────────────────────────────────────────────────
 
@@ -44,26 +50,13 @@ _already_notified: set[str] = set()
 # ─── State Management ───────────────────────────────────────────────────────
 
 def load_last_results() -> dict[str, dict]:
-    """Load previously seen results from disk."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    if os.path.exists(LAST_RESULTS_FILE):
-        try:
-            with open(LAST_RESULTS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # Convert list to dict keyed by id for fast lookup
-                if isinstance(data, list):
-                    return {r["id"]: r for r in data}
-                return data
-        except (json.JSONDecodeError, TypeError, KeyError):
-            return {}
-    return {}
+    """Load previously seen results from database (or disk fallback)."""
+    return get_last_results()
 
 
 def save_last_results(results: dict[str, dict]):
-    """Save current results to disk."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(LAST_RESULTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+    """Save current results to database and disk."""
+    db_save_last_results(results)
 
 
 # ─── Periodic Check Job ─────────────────────────────────────────────────────
@@ -184,8 +177,11 @@ async def handle_health_check(request):
 async def handle_get_result_api(request):
     """API endpoint to return JSON data for a specific result ID."""
     result_id = request.match_info['id']
+    data = get_announcement(result_id)
+    if data:
+        return web.json_response(data)
+
     data_path = os.path.join(DATA_DIR, "announcements", f"{result_id}.json")
-    
     if not os.path.exists(data_path):
         return web.json_response({"error": "Result not found"}, status=404)
         
@@ -242,6 +238,10 @@ async def main():
     logger.info("  Ethiopian Airlines Results Checker Bot")
     logger.info(f"  Check interval: every {CHECK_INTERVAL_SECONDS} seconds")
     logger.info("=" * 60)
+
+    # Initialize database tables and migrate any existing local files
+    init_db()
+    migrate_local_data()
 
     # Build the Telegram bot application
     app = build_application()

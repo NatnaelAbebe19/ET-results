@@ -14,36 +14,24 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from config import TELEGRAM_BOT_TOKEN, SUBSCRIBERS_FILE, DATA_DIR, BASE_URL
+from config import TELEGRAM_BOT_TOKEN, DATA_DIR, BASE_URL
 from scraper import fetch_results
+from database import get_subscribers, add_subscriber, remove_subscriber
 
 logger = logging.getLogger(__name__)
 
 
 # ─── Subscriber Management ───────────────────────────────────────────────────
 
-def _ensure_data_dir():
-    """Ensure the data directory exists."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-
 def load_subscribers() -> set[int]:
-    """Load subscriber chat IDs from file."""
-    _ensure_data_dir()
-    if os.path.exists(SUBSCRIBERS_FILE):
-        try:
-            with open(SUBSCRIBERS_FILE, "r") as f:
-                return set(json.load(f))
-        except (json.JSONDecodeError, TypeError):
-            return set()
-    return set()
+    """Load subscriber chat IDs from Neon database (with local file fallback)."""
+    return get_subscribers()
 
 
 def save_subscribers(subscribers: set[int]):
-    """Save subscriber chat IDs to file."""
-    _ensure_data_dir()
-    with open(SUBSCRIBERS_FILE, "w") as f:
-        json.dump(list(subscribers), f)
+    """Save subscriber chat IDs to database and local file."""
+    for chat_id in subscribers:
+        add_subscriber(chat_id)
 
 
 # ─── Message Formatting ─────────────────────────────────────────────────────
@@ -95,9 +83,7 @@ def _escape_md(text: str) -> str:
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start — subscribe to notifications."""
     chat_id = update.effective_chat.id
-    subscribers = load_subscribers()
-    subscribers.add(chat_id)
-    save_subscribers(subscribers)
+    add_subscriber(chat_id)
 
     welcome = (
         "👋 *Welcome to the ET Results Checker Bot\\!*\n\n"
@@ -117,9 +103,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /stop — unsubscribe from notifications."""
     chat_id = update.effective_chat.id
-    subscribers = load_subscribers()
-    subscribers.discard(chat_id)
-    save_subscribers(subscribers)
+    remove_subscriber(chat_id)
 
     await update.message.reply_text(
         "🛑 You have been unsubscribed\\. Send /start to resubscribe\\.",
