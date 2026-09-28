@@ -12,10 +12,11 @@ Page structure:
       .Mylead elements with position, location, description, candidate list
 """
 
+import asyncio
 import hashlib
 import logging
 import re
-import requests
+import aiohttp
 from bs4 import BeautifulSoup, Tag
 
 from config import ET_RESULTS_URL
@@ -46,11 +47,9 @@ def _extract_label_value(container: Tag, label: str) -> str:
     for strong in strong_tags:
         strong_text = strong.get_text(strip=True)
         if label.lower() in strong_text.lower():
-            # The value is in the text after this strong tag
             next_sibling = strong.next_sibling
             if next_sibling and isinstance(next_sibling, str):
                 return next_sibling.strip().lstrip("\xa0").strip()
-            # Sometimes the value is in the parent's text after the strong
             parent_text = strong.parent.get_text(strip=True) if strong.parent else ""
             if parent_text:
                 parts = parent_text.split(strong_text, 1)
@@ -59,9 +58,10 @@ def _extract_label_value(container: Tag, label: str) -> str:
     return ""
 
 
-def fetch_results() -> list[dict]:
+async def fetch_results() -> list[dict]:
     """
-    Fetch and parse all result announcements from the ET careers page.
+    Async fetch and parse all result announcements from the ET careers page.
+    Uses aiohttp to avoid blocking the event loop during HTTP I/O.
 
     Returns:
         A list of dicts, each with keys:
@@ -70,18 +70,22 @@ def fetch_results() -> list[dict]:
         - location: exam/interview venue
         - announcement: announcement type
         - description: full description text
+        - date_time: exam/interview date and time
+        - candidates: list of candidate dicts {no, name}
     """
     try:
-        response = requests.get(ET_RESULTS_URL, headers=HEADERS, timeout=30)
-        response.raise_for_status()
-    except requests.RequestException as e:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
+            async with session.get(ET_RESULTS_URL) as response:
+                response.raise_for_status()
+                html = await response.text()
+    except Exception as e:
         logger.error(f"Failed to fetch results page: {e}")
         return []
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     results = []
 
-    # Each result card has id="accordion_N"
     accordion_cards = soup.select("div.card[id^='accordion_']")
 
     if not accordion_cards:
@@ -100,12 +104,10 @@ def fetch_results() -> list[dict]:
 def _parse_accordion_card(card: Tag) -> dict | None:
     """Parse a single accordion card element."""
     try:
-        # --- Extract from card-header (collapsed summary) ---
         header = card.select_one(".card-header")
         if not header:
             return None
 
-        # Get the link text which contains position, location, announcement
         link = header.select_one("a.collapselink")
         source = link if link else header
 
@@ -118,33 +120,25 @@ def _parse_accordion_card(card: Tag) -> dict | None:
         if not position:
             return None
 
-        # --- Extract from panel-body (expanded details) ---
         description = ""
         panel_body = card.select_one(".panel-body")
         if panel_body:
-            # Look for Description label
             desc_leads = panel_body.select(".Mylead")
             for lead in desc_leads:
                 text = lead.get_text(strip=True)
                 if "Description" in text:
-                    # Get the description text after the label
                     desc_text = text.split(":", 1)[-1].strip() if ":" in text else text
                     description = desc_text[:500]
                     break
 
-            # If no description found via label, try the general text
             if not description:
                 body_text = panel_body.get_text(" ", strip=True)
                 if len(body_text) > 50:
                     description = body_text[:500]
 
-        # --- Extract date_time ---
         date_time = ""
         if panel_body:
             panel_text = panel_body.get_text(" ", strip=True)
-            # Non-greedy capture stopping at the standard boilerplate that follows the
-            # date/time in ET announcements (no real newline separates them in the HTML,
-            # so a plain "(.+?)$" would swallow the disclaimer and candidate list too).
             dt_match = re.search(
                 r"DATE\s*&\s*TIME\s*:\s*(.+?)(?=\s+AND,?\s+IF\s+YOUR\s+NAME|\s+PLEASE\s+NOTE|\s+CANDIDATE[_\s]*LIST|$)",
                 panel_text,
@@ -153,10 +147,8 @@ def _parse_accordion_card(card: Tag) -> dict | None:
             if dt_match:
                 date_time = dt_match.group(1).strip()
 
-        # --- Extract candidates ---
         candidates = []
         if panel_body:
-            # Check for Table-based candidates list (preferred, since ET uses table for lists now)
             table = panel_body.find("table")
             if table:
                 for row in table.find_all("tr"):
@@ -164,14 +156,11 @@ def _parse_accordion_card(card: Tag) -> dict | None:
                     if cols and len(cols) >= 2:
                         no_str = cols[0]
                         name_str = cols[1]
-                        # Skip if it is the header row
                         if no_str.lower() in ("no", "no.", "s.n", "s.no") or "name" in name_str.lower():
                             continue
-                        # Verify the first column represents a number
                         if re.match(r"^\d+$", no_str):
                             candidates.append({"no": no_str, "name": name_str})
 
-            # Fallback to Text-based parser if no candidates were found via table
             if not candidates:
                 panel_text = panel_body.get_text("\n", strip=True)
                 in_list = False
@@ -184,7 +173,6 @@ def _parse_accordion_card(card: Tag) -> dict | None:
                         match = re.match(r"^(\d+)\s+(.+)", line)
                         if match:
                             candidates.append({"no": match.group(1), "name": match.group(2).strip()})
-
 
         return {
             "id": _generate_id(position, announcement),
@@ -202,7 +190,7 @@ def _parse_accordion_card(card: Tag) -> dict | None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    results = fetch_results()
+    results = asyncio.run(fetch_results())
     print(f"\n{'='*60}")
     print(f"Found {len(results)} results")
     print(f"{'='*60}\n")

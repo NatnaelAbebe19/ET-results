@@ -61,7 +61,7 @@ def save_last_results(results: dict[str, dict]):
 
 # ─── Periodic Check Job ─────────────────────────────────────────────────────
 
-def seed_initial_state():
+async def seed_initial_state():
     """
     If there is no saved state (first run / fresh deploy), scrape the page
     once and save all current results WITHOUT sending any notifications.
@@ -78,7 +78,7 @@ def seed_initial_state():
         return  # Already have state, nothing to seed
 
     logger.info("🌱 First run detected — seeding initial state (no notifications)...")
-    current_results = fetch_results()
+    current_results = await fetch_results()
     if current_results:
         all_results = {r["id"]: r for r in current_results}
         save_last_results(all_results)
@@ -105,7 +105,7 @@ async def check_for_new_results(app: Application):
     global _already_notified
     logger.info("🔍 Checking for new results...")
 
-    current_results = fetch_results()
+    current_results = await fetch_results()
     if not current_results:
         logger.warning("No results fetched (page might be down). Skipping.")
         return
@@ -154,12 +154,18 @@ async def check_for_new_results(app: Application):
             logger.info(f"📣 Sending to {len(subscribers)} subscriber(s)...")
             for result in new_results:
                 logger.info(f"📤 Sending notification for: {result['position'][:50]}")
-                for chat_id in list(subscribers):  # snapshot to avoid mutation during iteration
-                    try:
-                        await send_notification(app, chat_id, result)
-                    except Exception as e:
-                        logger.error(f"Unexpected error sending to {chat_id}: {e}")
-                    await asyncio.sleep(0.05)  # Telegram rate limit: ~20 msg/s per bot
+                # Send to all subscribers concurrently (30 at a time to stay well
+                # within Telegram's ~30 msg/s per bot rate limit)
+                semaphore = asyncio.Semaphore(30)
+
+                async def _send_one(chat_id: int, r: dict = result):
+                    async with semaphore:
+                        try:
+                            await send_notification(app, chat_id, r)
+                        except Exception as e:
+                            logger.error(f"Unexpected error sending to {chat_id}: {e}")
+
+                await asyncio.gather(*[_send_one(cid) for cid in list(subscribers)])
     else:
         logger.info("No new results found.")
         # Still update the state in case results were removed from the page
@@ -283,7 +289,30 @@ async def main():
     scheduler.start()
 
     # Seed initial state (saves baseline without sending notifications)
-    seed_initial_state()
+    await seed_initial_state()
+
+    # ─── Keep-Alive Ping ─────────────────────────────────────────────────────
+    # Render's free tier sleeps after 15 minutes of inactivity, causing a
+    # 30-50 second cold-start delay. Pinging our own health endpoint every
+    # 14 minutes keeps the service warm and responsive at all times.
+    async def _self_ping():
+        try:
+            from config import BASE_URL
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(BASE_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    logger.debug(f"🏓 Keep-alive ping → {resp.status}")
+        except Exception as e:
+            logger.debug(f"Keep-alive ping failed (non-fatal): {e}")
+
+    scheduler.add_job(
+        _self_ping,
+        "interval",
+        minutes=14,
+        id="keep_alive",
+        name="Keep-Alive Self-Ping",
+        max_instances=1,
+    )
 
     logger.info(f"⏰ Checking every {CHECK_INTERVAL_SECONDS} seconds. Press Ctrl+C to stop.")
 

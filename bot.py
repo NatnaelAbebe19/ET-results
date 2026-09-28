@@ -115,7 +115,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /check — manually trigger a check for new results."""
     await update.message.reply_text("🔍 Checking for new results...")
-    results = fetch_results()
+    results = await fetch_results()
 
     if results:
         msg = format_summary_message(results)
@@ -133,7 +133,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /latest — show the most recent results."""
-    results = fetch_results()
+    results = await fetch_results()
 
     if not results:
         await update.message.reply_text("❌ No results available right now.")

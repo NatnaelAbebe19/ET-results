@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 try:
     import psycopg2
+    import psycopg2.pool
     from psycopg2.extras import Json, execute_values
     PSYCOPG2_AVAILABLE = True
 except ImportError:
@@ -26,6 +27,28 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# ─── Persistent Connection Pool ──────────────────────────────────────────────
+# Re-uses connections across calls instead of opening a new TCP connection on
+# every database operation. minconn=1 keeps one warm connection alive; maxconn=5
+# allows burst concurrency without exhausting the Supabase session pooler limit.
+_pool: "psycopg2.pool.SimpleConnectionPool | None" = None
+
+
+def _get_pool() -> "psycopg2.pool.SimpleConnectionPool":
+    """Return (or lazily create) the global connection pool."""
+    global _pool
+    if _pool is None:
+        if not (DATABASE_URL and PSYCOPG2_AVAILABLE):
+            raise RuntimeError("DATABASE_URL is not configured or psycopg2 is not installed.")
+        _pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=5,
+            dsn=DATABASE_URL,
+            connect_timeout=10,
+        )
+        logger.info("✅ Database connection pool created.")
+    return _pool
+
 
 def is_db_configured() -> bool:
     """Check if DATABASE_URL is set and psycopg2 is available."""
@@ -35,28 +58,38 @@ def is_db_configured() -> bool:
 @contextmanager
 def get_db_connection(max_retries: int = 3):
     """
-    Context manager providing a database connection with auto-commit/rollback.
-    Includes retries to handle Neon serverless compute cold-starts.
+    Context manager providing a pooled database connection.
+    Automatically commits on success and rolls back on error.
+    Retries on transient failures (e.g. serverless wake-up).
     """
     if not is_db_configured():
         raise RuntimeError("DATABASE_URL is not configured or psycopg2 is not installed.")
 
+    pool = _get_pool()
     conn = None
     last_err = None
+
     for attempt in range(1, max_retries + 1):
         try:
-            conn = psycopg2.connect(DATABASE_URL)
+            conn = pool.getconn()
+            # Ensure the connection is alive (ping it)
+            conn.cursor().execute("SELECT 1")
             break
         except Exception as e:
             last_err = e
-            logger.warning(f"Database connection attempt {attempt}/{max_retries} failed: {e}")
+            # If the connection is broken, close and remove it from pool
+            if conn is not None:
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+                conn = None
+            logger.warning(f"DB connection attempt {attempt}/{max_retries} failed: {e}")
             if attempt < max_retries:
                 time.sleep(1.5 * attempt)
 
     if conn is None:
-        if last_err:
-            raise last_err
-        raise RuntimeError("Failed to connect to database.")
+        raise last_err or RuntimeError("Failed to acquire database connection.")
 
     try:
         yield conn
@@ -66,7 +99,7 @@ def get_db_connection(max_retries: int = 3):
         raise
     finally:
         try:
-            conn.close()
+            pool.putconn(conn)
         except Exception:
             pass
 
