@@ -216,7 +216,7 @@ def matches_role_filter(result: dict, role_filter: str) -> bool:
 FILTER_OPTIONS = {
     "pilot": {"label": "✈️ Pilot Only", "desc": "Trainee Pilot, Cadet & Cockpit roles"},
     "cabin": {"label": "🧑‍✈️ Cabin Crew", "desc": "Trainee Cabin Crew & Flight Attendants"},
-    "amt": {"label": "🔧 AMT Technicians", "desc": "A/C Maintenance, Structure, Avionics & Mechanics"},
+    "amt": {"label": "🔧 AMT Only", "desc": "A/C Maintenance, Structure, Avionics & Mechanics"},
     "aviation": {"label": "✈️🛠️ All Aviation Roles", "desc": "Pilot, Cabin Crew & AMT combined"},
     "all": {"label": "🔔 All Announcements", "desc": "Every result published (Default)"},
 }
@@ -237,7 +237,7 @@ def get_filter_keyboard(current_filter: str = "all") -> InlineKeyboardMarkup:
             InlineKeyboardButton(label("cabin", "🧑‍✈️ Cabin Crew"), callback_data="filter:cabin"),
         ],
         [
-            InlineKeyboardButton(label("amt", "🔧 AMT Technicians"), callback_data="filter:amt"),
+            InlineKeyboardButton(label("amt", "🔧 AMT Only"), callback_data="filter:amt"),
             InlineKeyboardButton(label("aviation", "✈️🛠️ All Aviation"), callback_data="filter:aviation"),
         ],
         [
@@ -257,11 +257,11 @@ def format_filter_message(current_filter: str = "all") -> str:
     return (
         "🎯 *Notification Preferences*\n\n"
         "Choose which Ethiopian Airlines announcements you want to receive:\n\n"
-        "• ✈️ *Pilot Only* \\— `TRAINEE PILOT CANDIDATES` & flight deck roles\n"
-        "• 🧑‍✈️ *Cabin Crew Only* \\— `TRAINEE CABIN CREW` & crew roles\n"
-        "• 🔧 *AMT Technicians* \\— `TRAINEE A/C MAINTENANCE`, Avionics, Structure & Mechanics\n"
-        "• ✈️🛠️ *All Aviation Roles* \\— Pilot, Cabin Crew & AMT combined\n"
-        "• 🔔 *All Announcements* \\— Every career result posted \\(Default\\)\n\n"
+        "• ✈️ *Pilot Only* — `TRAINEE PILOT CANDIDATES` & flight deck roles\n"
+        "• 🧑‍✈️ *Cabin Crew Only* — `TRAINEE CABIN CREW` & crew roles\n"
+        "• 🔧 *AMT Technicians* — `TRAINEE A/C MAINTENANCE`, Avionics, Structure & Mechanics\n"
+        "• ✈️🛠️ *All Aviation Roles* — Pilot, Cabin Crew & AMT combined\n"
+        "• 🔔 *All Announcements* — Every career result posted \\(Default\\)\n\n"
         f"📌 *Current setting:* *{_escape_md(current_label)}*\n\n"
         "Tap a button below to update your preference instantly:"
     )
@@ -270,32 +270,25 @@ def format_filter_message(current_filter: str = "all") -> str:
 # ─── Bot Command Handlers ───────────────────────────────────────────────────
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start — subscribe to notifications with interactive role filter."""
+    """Handle /start — subscribe to notifications with clean, concise role selection."""
     chat_id = update.effective_chat.id
     add_subscriber(chat_id)
     current_filter = get_subscriber_filter(chat_id)
     if current_filter == "crew":
         current_filter = "aviation"
-    current_label = FILTER_OPTIONS.get(current_filter, FILTER_OPTIONS["all"])["label"]
 
     welcome = (
         "👋 *Welcome to the ET Results Checker Bot\\!*\n\n"
-        "I monitor the Ethiopian Airlines careers results page and "
-        "notify you whenever new results are posted\\.\n\n"
-        f"🔔 *Your Current Filter:* *{_escape_md(current_label)}*\n"
-        "Tap a button below to customize which announcements you receive\\.\n\n"
+        "✅ You are subscribed to notifications\\!\n\n"
         "📌 *Available Commands:*\n"
-        "/filter \\— Choose notification preference\n"
-        "/only_pilot \\— Switch to Pilot only\n"
-        "/only_cabin \\— Switch to Cabin Crew only\n"
-        "/only_amt \\— Switch to AMT Technicians only\n"
-        "/aviation \\— All Aviation roles \\(Pilot \\+ Cabin \\+ AMT\\)\n"
-        "/all_results \\— Receive all announcements\n"
-        "/check \\— Manually check for new results\n"
-        "/latest \\— View current results summary\n"
-        "/stop \\— Unsubscribe from notifications\n"
-        "/help \\— Show help message\n\n"
-        "✅ You are subscribed to notifications\\!"
+        "/filter — Choose notification preference\n"
+        "/only\\_pilot — Switch to Pilot only\n"
+        "/only\\_cabin — Switch to Cabin Crew only\n"
+        "/only\\_amt — Switch to AMT Technicians only\n"
+        "/aviation — All Aviation roles \\(Pilot \\+ Cabin \\+ AMT\\)\n"
+        "/all\\_results — Receive all announcements\n"
+        "/stop — Unsubscribe from notifications\n"
+        "/help — Show help message"
     )
     await update.message.reply_text(
         welcome,
@@ -431,18 +424,43 @@ async def filter_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     # Pop toast alert on Telegram
     await query.answer(f"Preference set: {choice_label}!")
 
-    # Update the message in place with new active checkmark
-    new_text = format_filter_message(choice)
-    new_markup = get_filter_keyboard(choice)
-
+    # Update buttons/text in place with new active checkmark
     try:
-        await query.edit_message_text(
-            new_text,
-            parse_mode="MarkdownV2",
-            reply_markup=new_markup,
-        )
+        if query.message and "Notification Preferences" in (query.message.text or ""):
+            await query.edit_message_text(
+                format_filter_message(choice),
+                parse_mode="MarkdownV2",
+                reply_markup=get_filter_keyboard(choice),
+            )
+        elif query.message:
+            await query.edit_message_reply_markup(reply_markup=get_filter_keyboard(choice))
     except Exception as e:
         logger.debug(f"Message already up to date: {e}")
+
+    # Send an explicit confirmation message in chat
+    try:
+        if choice == "all":
+            detail = "You will now receive notifications for *all* Ethiopian Airlines career results posted\\."
+        elif choice == "aviation":
+            detail = "You will now receive notifications for *Pilot*, *Cabin Crew*, and *AMT Technician* announcements\\."
+        elif choice == "pilot":
+            detail = "You will now only receive notifications for *Trainee Pilot* announcements\\."
+        elif choice == "cabin":
+            detail = "You will now only receive notifications for *Trainee Cabin Crew* announcements\\."
+        elif choice == "amt":
+            detail = "You will now only receive notifications for *AMT Technician* announcements\\."
+        else:
+            detail = f"You will now receive notifications for:\n👉 *{_escape_md(choice_label)}*"
+
+        await query.message.reply_text(
+            f"✅ *Position Changed Successfully\\!*\n\n"
+            f"🎯 *Active Filter:* *{_escape_md(choice_label)}*\n\n"
+            f"{detail}\n\n"
+            f"You can switch positions anytime using /filter or the buttons above\\.",
+            parse_mode="MarkdownV2",
+        )
+    except Exception as e:
+        logger.error(f"Failed to send confirmation reply message: {e}")
 
     logger.info(f"Chat {chat_id} clicked filter: {choice}")
 
@@ -517,17 +535,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "✈️ *ET Results Checker Bot — Commands Help*\n\n"
         "🎯 *Notification Filters:*\n"
-        "/filter \\— Open interactive buttons to choose what alerts you receive\n"
-        "/only_pilot \\— Switch alerts to Trainee Pilot results only\n"
-        "/only_cabin \\— Switch alerts to Cabin Crew results only\n"
-        "/only_amt \\— Switch alerts to AMT Technicians only\n"
-        "/aviation \\— All Aviation roles \\(Pilot, Cabin Crew, AMT\\)\n"
-        "/all_results \\— Receive alerts for all Ethiopian Airlines results\n\n"
+        "/filter — Open interactive buttons to choose what alerts you receive\n"
+        "/only\\_pilot — Switch alerts to Trainee Pilot results only\n"
+        "/only\\_cabin — Switch alerts to Cabin Crew results only\n"
+        "/only\\_amt — Switch alerts to AMT Technicians only\n"
+        "/aviation — All Aviation roles \\(Pilot, Cabin Crew, AMT\\)\n"
+        "/all\\_results — Receive alerts for all Ethiopian Airlines results\n\n"
         "🔍 *Results & Status:*\n"
-        "/latest \\— View the most recent result announcement\n"
-        "/check \\— Check corporate site now for recent results\n"
-        "/stop \\— Unsubscribe from all alerts\n"
-        "/start \\— Restart bot & view current preferences"
+        "/latest — View the most recent result announcement\n"
+        "/check — Check corporate site now for recent results\n"
+        "/stop — Unsubscribe from all alerts\n"
+        "/start — Restart bot & view current preferences"
     )
     chat_id = update.effective_chat.id
     current_filter = get_subscriber_filter(chat_id)
