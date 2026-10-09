@@ -22,6 +22,7 @@ from config import (
     DATABASE_URL,
     DATA_DIR,
     SUBSCRIBERS_FILE,
+    SUBSCRIBER_PREFS_FILE,
     LAST_RESULTS_FILE,
 )
 
@@ -117,8 +118,10 @@ def init_db():
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS subscribers (
                         chat_id BIGINT PRIMARY KEY,
+                        role_filter VARCHAR(32) DEFAULT 'all',
                         subscribed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                     );
+                    ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS role_filter VARCHAR(32) DEFAULT 'all';
                 """)
 
                 # 2. Tracked results table (to prevent spam on restart)
@@ -245,6 +248,29 @@ def migrate_local_data():
 
 # ─── Subscriber API ─────────────────────────────────────────────────────────
 
+def _load_local_prefs() -> dict[str, str]:
+    """Load local subscriber role preferences map {chat_id: role_filter}."""
+    if os.path.exists(SUBSCRIBER_PREFS_FILE):
+        try:
+            with open(SUBSCRIBER_PREFS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.warning(f"Failed to read subscriber prefs: {e}")
+    return {}
+
+
+def _save_local_prefs(prefs: dict[str, str]):
+    """Save local subscriber role preferences map to file."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(SUBSCRIBER_PREFS_FILE, "w", encoding="utf-8") as f:
+            json.dump(prefs, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to write subscriber prefs: {e}")
+
+
 def get_subscribers() -> set[int]:
     """Load all subscriber chat IDs from Neon (or fallback to local file)."""
     if is_db_configured():
@@ -267,16 +293,93 @@ def get_subscribers() -> set[int]:
     return set()
 
 
-def add_subscriber(chat_id: int) -> bool:
+def get_subscribers_with_filters() -> dict[int, str]:
+    """
+    Load all subscribers mapped to their role filter preference
+    ('all', 'pilot', 'cabin', 'crew').
+    """
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT chat_id, COALESCE(role_filter, 'all') FROM subscribers;")
+                    rows = cur.fetchall()
+                    return {row[0]: (row[1] or "all").lower() for row in rows}
+        except Exception as e:
+            logger.error(f"Error reading subscribers with filters from DB: {e}. Falling back to file.")
+
+    # Fallback to local files
+    subs = get_subscribers()
+    prefs = _load_local_prefs()
+    return {cid: prefs.get(str(cid), "all").lower() for cid in subs}
+
+
+def get_subscriber_filter(chat_id: int) -> str:
+    """Get the notification role filter for a specific chat ID."""
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COALESCE(role_filter, 'all') FROM subscribers WHERE chat_id = %s;", (chat_id,))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return row[0].lower()
+        except Exception as e:
+            logger.error(f"Error reading subscriber filter for {chat_id}: {e}")
+
+    prefs = _load_local_prefs()
+    return prefs.get(str(chat_id), "all").lower()
+
+
+def set_subscriber_filter(chat_id: int, role_filter: str) -> bool:
+    """Set notification role filter for a subscriber ('all', 'pilot', 'cabin', 'crew')."""
+    role_filter = (role_filter or "all").lower()
+    success = False
+
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO subscribers (chat_id, role_filter)
+                        VALUES (%s, %s)
+                        ON CONFLICT (chat_id) DO UPDATE SET role_filter = EXCLUDED.role_filter;
+                        """,
+                        (chat_id, role_filter),
+                    )
+            success = True
+        except Exception as e:
+            logger.error(f"Error setting subscriber role filter for {chat_id}: {e}")
+
+    # Dual-write to local storage
+    try:
+        add_subscriber(chat_id, role_filter=role_filter)
+        prefs = _load_local_prefs()
+        prefs[str(chat_id)] = role_filter
+        _save_local_prefs(prefs)
+        success = True
+    except Exception as e:
+        logger.warning(f"Could not save subscriber filter locally: {e}")
+
+    return success
+
+
+def add_subscriber(chat_id: int, role_filter: str = "all") -> bool:
     """Add a new subscriber chat ID to database and sync to local file."""
+    role_filter = (role_filter or "all").lower()
     success = False
     if is_db_configured():
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO subscribers (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING;",
-                        (chat_id,),
+                        """
+                        INSERT INTO subscribers (chat_id, role_filter)
+                        VALUES (%s, %s)
+                        ON CONFLICT (chat_id) DO NOTHING;
+                        """,
+                        (chat_id, role_filter),
                     )
             success = True
         except Exception as e:
@@ -292,6 +395,13 @@ def add_subscriber(chat_id: int) -> bool:
         current.add(chat_id)
         with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
             json.dump(list(current), f)
+
+        # Set default pref if not already present
+        prefs = _load_local_prefs()
+        if str(chat_id) not in prefs:
+            prefs[str(chat_id)] = role_filter
+            _save_local_prefs(prefs)
+
         success = True
     except Exception as e:
         logger.warning(f"Could not write subscriber to local file: {e}")
@@ -319,7 +429,13 @@ def remove_subscriber(chat_id: int) -> bool:
             current.discard(chat_id)
             with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
                 json.dump(list(current), f)
-            success = True
+
+        prefs = _load_local_prefs()
+        if str(chat_id) in prefs:
+            del prefs[str(chat_id)]
+            _save_local_prefs(prefs)
+
+        success = True
     except Exception as e:
         logger.warning(f"Could not update local subscribers file: {e}")
 

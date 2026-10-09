@@ -22,7 +22,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
 )
 from scraper import fetch_results
-from bot import build_application, load_subscribers, send_notification
+from bot import build_application, load_subscribers, send_notification, matches_role_filter
 from result_parser import save_result
 from database import (
     init_db,
@@ -30,6 +30,7 @@ from database import (
     get_last_results,
     save_last_results as db_save_last_results,
     get_announcement,
+    get_subscribers_with_filters,
 )
 
 # ─── Logging Setup ───────────────────────────────────────────────────────────
@@ -147,14 +148,28 @@ async def check_for_new_results(app: Application):
         save_last_results(all_results)
         logger.info(f"✅ State saved. Total results tracked: {len(all_results)}")
 
-        subscribers = load_subscribers()
-        if not subscribers:
+        subscribers_map = get_subscribers_with_filters()
+        if not subscribers_map:
             logger.warning("No subscribers yet. New results won't be sent to anyone.")
         else:
-            logger.info(f"📣 Sending to {len(subscribers)} subscriber(s)...")
+            logger.info(f"📣 Evaluating notifications for {len(subscribers_map)} subscriber(s)...")
             for result in new_results:
-                logger.info(f"📤 Sending notification for: {result['position'][:50]}")
-                # Send to all subscribers concurrently (30 at a time to stay well
+                pos_title = result.get("position", "Unknown")
+                # Filter subscribers whose preference matches this announcement
+                recipients = [
+                    cid for cid, r_filter in subscribers_map.items()
+                    if matches_role_filter(result, r_filter)
+                ]
+
+                logger.info(
+                    f"📤 Sending notification for: {pos_title[:50]} "
+                    f"to {len(recipients)}/{len(subscribers_map)} matched subscriber(s)..."
+                )
+
+                if not recipients:
+                    continue
+
+                # Send to matched subscribers concurrently (30 at a time to stay well
                 # within Telegram's ~30 msg/s per bot rate limit)
                 semaphore = asyncio.Semaphore(30)
 
@@ -165,7 +180,7 @@ async def check_for_new_results(app: Application):
                         except Exception as e:
                             logger.error(f"Unexpected error sending to {chat_id}: {e}")
 
-                await asyncio.gather(*[_send_one(cid) for cid in list(subscribers)])
+                await asyncio.gather(*[_send_one(cid) for cid in recipients])
     else:
         logger.info("No new results found.")
         # Still update the state in case results were removed from the page
