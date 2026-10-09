@@ -256,12 +256,6 @@ def format_filter_message(current_filter: str = "all") -> str:
 
     return (
         "🎯 *Notification Preferences*\n\n"
-        "Choose which Ethiopian Airlines announcements you want to receive:\n\n"
-        "• ✈️ *Pilot Only* — `TRAINEE PILOT CANDIDATES` & flight deck roles\n"
-        "• 🧑‍✈️ *Cabin Crew Only* — `TRAINEE CABIN CREW` & crew roles\n"
-        "• 🔧 *AMT Technicians* — `TRAINEE A/C MAINTENANCE`, Avionics, Structure & Mechanics\n"
-        "• ✈️🛠️ *All Aviation Roles* — Pilot, Cabin Crew & AMT combined\n"
-        "• 🔔 *All Announcements* — Every career result posted \\(Default\\)\n\n"
         f"📌 *Current setting:* *{_escape_md(current_label)}*\n\n"
         "Tap a button below to update your preference instantly:"
     )
