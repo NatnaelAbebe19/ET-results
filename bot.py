@@ -260,7 +260,7 @@ def format_filter_message(current_filter: str = "all") -> str:
     return (
         "🎯 *Notification Preferences*\n\n"
         f"📌 *Current setting:* *{_escape_md(current_label)}*\n\n"
-        f"📌 *All Aviation includes: Pilot, AMT and Cabin Crew*\n"
+        "📌 All Aviation: Pilot, AMT and Cabin Crew\n\n"
         "Tap a button below to update your preference instantly:"
     )
 
