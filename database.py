@@ -74,7 +74,8 @@ def get_db_connection(max_retries: int = 3):
         try:
             conn = pool.getconn()
             # Ensure the connection is alive (ping it)
-            conn.cursor().execute("SELECT 1")
+            with conn.cursor() as ping_cur:
+                ping_cur.execute("SELECT 1")
             break
         except Exception as e:
             last_err = e
@@ -99,10 +100,14 @@ def get_db_connection(max_retries: int = 3):
         conn.rollback()
         raise
     finally:
-        try:
-            pool.putconn(conn)
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                if conn.closed:
+                    pool.putconn(conn, close=True)
+                else:
+                    pool.putconn(conn)
+            except Exception:
+                pass
 
 
 def init_db():
@@ -216,32 +221,37 @@ def migrate_local_data():
         except Exception as e:
             logger.warning(f"Failed to migrate last_results.json: {e}")
 
-    # 3. Migrate announcements
+    # 3. Migrate announcements (batch insert in a single query)
     announcements_dir = os.path.join(DATA_DIR, "announcements")
     if os.path.exists(announcements_dir):
         try:
-            migrated_count = 0
+            announcement_items = []
             for fname in os.listdir(announcements_dir):
                 if fname.endswith(".json"):
                     aid = fname[:-5]
                     fpath = os.path.join(announcements_dir, fname)
-                    with open(fpath, "r", encoding="utf-8") as f:
-                        adata = json.load(f)
-                    with get_db_connection() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                """
-                                INSERT INTO announcements (id, data)
-                                VALUES (%s, %s)
-                                ON CONFLICT (id) DO UPDATE SET
-                                    data = EXCLUDED.data,
-                                    updated_at = CURRENT_TIMESTAMP
-                                """,
-                                (aid, Json(adata)),
-                            )
-                    migrated_count += 1
-            if migrated_count > 0:
-                logger.info(f"✅ Migrated {migrated_count} announcement detail file(s) to Neon.")
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            adata = json.load(f)
+                        announcement_items.append((aid, Json(adata)))
+                    except Exception as e:
+                        logger.warning(f"Could not load {fname} for migration: {e}")
+
+            if announcement_items:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        execute_values(
+                            cur,
+                            """
+                            INSERT INTO announcements (id, data)
+                            VALUES %s
+                            ON CONFLICT (id) DO UPDATE SET
+                                data = EXCLUDED.data,
+                                updated_at = CURRENT_TIMESTAMP
+                            """,
+                            announcement_items,
+                        )
+                logger.info(f"✅ Migrated {len(announcement_items)} announcement detail file(s) to Neon in 1 batch.")
         except Exception as e:
             logger.warning(f"Failed to migrate announcements folder: {e}")
 
@@ -352,9 +362,18 @@ def set_subscriber_filter(chat_id: int, role_filter: str) -> bool:
         except Exception as e:
             logger.error(f"Error setting subscriber role filter for {chat_id}: {e}")
 
-    # Dual-write to local storage
+    # Dual-write to local storage (skip add_subscriber to avoid a redundant
+    # second DB INSERT — the DB write above already handles it)
     try:
-        add_subscriber(chat_id, role_filter=role_filter)
+        os.makedirs(DATA_DIR, exist_ok=True)
+        current = set()
+        if os.path.exists(SUBSCRIBERS_FILE):
+            with open(SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
+                current = set(json.load(f))
+        current.add(chat_id)
+        with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(current), f)
+
         prefs = _load_local_prefs()
         prefs[str(chat_id)] = role_filter
         _save_local_prefs(prefs)
@@ -560,6 +579,51 @@ def save_announcement(result: dict):
         logger.warning(f"Could not save announcement to local file: {e}")
 
 
+def save_announcements_batch(results: list[dict]):
+    """Save multiple announcements (with candidate lists) to Neon in a single batch query."""
+    if not results:
+        return
+
+    # Deduplicate by id to avoid Postgres "ON CONFLICT DO UPDATE command cannot affect row a second time" error
+    deduped: dict[str, dict] = {}
+    for r in results:
+        if isinstance(r, dict) and r.get("id"):
+            deduped[r["id"]] = r
+
+    valid_results = list(deduped.values())
+    if not valid_results:
+        return
+
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO announcements (id, data)
+                        VALUES %s
+                        ON CONFLICT (id) DO UPDATE SET
+                            data = EXCLUDED.data,
+                            updated_at = CURRENT_TIMESTAMP;
+                        """,
+                        [(r["id"], Json(r)) for r in valid_results],
+                    )
+        except Exception as e:
+            logger.error(f"Error batch saving announcements to database: {e}")
+
+    # Dual-write to local disk
+    try:
+        announcements_dir = os.path.join(DATA_DIR, "announcements")
+        os.makedirs(announcements_dir, exist_ok=True)
+        for r in valid_results:
+            filename = os.path.join(announcements_dir, f"{r['id']}.json")
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(r, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not batch save announcements to local files: {e}")
+
+
 def get_announcement(result_id: str) -> dict | None:
     """Retrieve full announcement details by ID from Neon or local disk."""
     if is_db_configured():
@@ -570,6 +634,24 @@ def get_announcement(result_id: str) -> dict | None:
                     row = cur.fetchone()
                     if row and row[0]:
                         return row[0]
+
+                    # Fallback: check if metadata exists in tracked_results table
+                    cur.execute(
+                        "SELECT position, location, announcement, description, date_time FROM tracked_results WHERE id = %s;",
+                        (result_id,),
+                    )
+                    t_row = cur.fetchone()
+                    if t_row:
+                        return {
+                            "id": result_id,
+                            "position": t_row[0] or "",
+                            "location": t_row[1] or "",
+                            "announcement": t_row[2] or "",
+                            "description": t_row[3] or "",
+                            "date_time": t_row[4] or "",
+                            "candidates": [],
+                            "archived": True,
+                        }
         except Exception as e:
             logger.error(f"Error fetching announcement {result_id} from database: {e}")
 

@@ -72,16 +72,17 @@ def parse_announcement(text: str):
     return result
 
 def save_result(result: dict, data_dir: str = None):
-    # Save to Neon PostgreSQL
+    # Save to Neon PostgreSQL and default local storage
     save_announcement(result)
 
-    if data_dir is None:
-        data_dir = os.path.join(DATA_DIR, "announcements")
-    os.makedirs(data_dir, exist_ok=True)
-    filename = os.path.join(data_dir, f"{result['id']}.json")
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-    return filename
+    # Only write custom storage path if explicitly requested
+    if data_dir is not None:
+        os.makedirs(data_dir, exist_ok=True)
+        filename = os.path.join(data_dir, f"{result['id']}.json")
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        return filename
+    return os.path.join(DATA_DIR, "announcements", f"{result['id']}.json")
 
 if __name__ == "__main__":
     # Test with provided sample

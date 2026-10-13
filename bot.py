@@ -25,6 +25,7 @@ from database import (
     get_subscriber_filter,
     set_subscriber_filter,
     get_subscribers_with_filters,
+    save_announcement,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,12 +80,15 @@ def format_summary_message(results: list[dict]) -> str:
     return msg
 
 
+_MD_ESCAPE_REGEX = re.compile(r"([_*\[\]()~`>#+\-=|{}.!])")
+AMT_WORD_REGEX = re.compile(r"\bamt\b")
+
+
 def _escape_md(text: str) -> str:
-    """Escape special Markdown V2 characters."""
-    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in special_chars:
-        text = text.replace(char, f"\\{char}")
-    return text
+    """Escape special Markdown V2 characters efficiently."""
+    if not text:
+        return ""
+    return _MD_ESCAPE_REGEX.sub(r"\\\1", str(text))
 
 
 # ─── Role / Position Matching Logic ──────────────────────────────────────────
@@ -174,8 +178,7 @@ def is_amt_result(result: dict) -> bool:
     if any(k in full_text for k in amt_keywords):
         return True
 
-    # Word boundary match for 'amt'
-    if re.search(r'\bamt\b', full_text):
+    if AMT_WORD_REGEX.search(full_text):
         return True
 
     return False
@@ -497,6 +500,12 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not results:
         await update.message.reply_text("❌ No results available right now.")
         return
+
+    # Ensure the latest result's candidates are persisted in database
+    try:
+        save_announcement(results[0])
+    except Exception as e:
+        logger.debug(f"Could not persist latest announcement: {e}")
 
     # Show details of the first (most recent) result
     try:

@@ -31,6 +31,15 @@ HEADERS = {
     )
 }
 
+# Pre-compiled regexes for high parsing throughput
+DATE_TIME_REGEX = re.compile(
+    r"DATE\s*&\s*TIME\s*:\s*(.+?)(?=\s+AND,?\s+IF\s+YOUR\s+NAME|\s+PLEASE\s+NOTE|\s+CANDIDATE[_\s]*LIST|$)",
+    re.IGNORECASE,
+)
+CANDIDATE_LIST_HEADER_REGEX = re.compile(r"candidate[_\s]*list", re.IGNORECASE)
+CANDIDATE_ROW_REGEX = re.compile(r"^(\d+)\s+(.+)")
+NUMERIC_REGEX = re.compile(r"^\d+$")
+
 
 def _generate_id(position: str, announcement: str) -> str:
     """Generate a unique ID for a result entry based on its content."""
@@ -74,7 +83,7 @@ async def fetch_results() -> list[dict]:
         - candidates: list of candidate dicts {no, name}
     """
     try:
-        timeout = aiohttp.ClientTimeout(total=30)
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
         async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
             async with session.get(ET_RESULTS_URL) as response:
                 response.raise_for_status()
@@ -139,11 +148,7 @@ def _parse_accordion_card(card: Tag) -> dict | None:
         date_time = ""
         if panel_body:
             panel_text = panel_body.get_text(" ", strip=True)
-            dt_match = re.search(
-                r"DATE\s*&\s*TIME\s*:\s*(.+?)(?=\s+AND,?\s+IF\s+YOUR\s+NAME|\s+PLEASE\s+NOTE|\s+CANDIDATE[_\s]*LIST|$)",
-                panel_text,
-                re.IGNORECASE,
-            )
+            dt_match = DATE_TIME_REGEX.search(panel_text)
             if dt_match:
                 date_time = dt_match.group(1).strip()
 
@@ -158,7 +163,7 @@ def _parse_accordion_card(card: Tag) -> dict | None:
                         name_str = cols[1]
                         if no_str.lower() in ("no", "no.", "s.n", "s.no") or "name" in name_str.lower():
                             continue
-                        if re.match(r"^\d+$", no_str):
+                        if NUMERIC_REGEX.match(no_str):
                             candidates.append({"no": no_str, "name": name_str})
 
             if not candidates:
@@ -166,11 +171,11 @@ def _parse_accordion_card(card: Tag) -> dict | None:
                 in_list = False
                 for line in panel_text.splitlines():
                     line = line.strip()
-                    if re.search(r"candidate[_\s]*list", line, re.IGNORECASE):
+                    if CANDIDATE_LIST_HEADER_REGEX.search(line):
                         in_list = True
                         continue
                     if in_list:
-                        match = re.match(r"^(\d+)\s+(.+)", line)
+                        match = CANDIDATE_ROW_REGEX.match(line)
                         if match:
                             candidates.append({"no": match.group(1), "name": match.group(2).strip()})
 

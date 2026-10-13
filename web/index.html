@@ -62,36 +62,49 @@
         const searchInput = document.getElementById('candidate-search');
         let allCandidates = [];
 
+        function escapeHtml(str) {
+            return String(str || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         async function loadData() {
             try {
                 const response = await fetch(`/api/results/${resultId}`);
                 if (!response.ok) throw new Error('Result not found');
                 const data = await response.json();
 
-                document.title = `${data.position} - Candidates`;
-                document.getElementById('candidate-count').textContent = data.candidates.length;
+                const posName = data.position || 'Announcement';
+                document.title = `${posName} - Candidates`;
+                const count = data.candidates ? data.candidates.length : 0;
+                document.getElementById('candidate-count').textContent = count;
 
-                allCandidates = data.candidates;
+                allCandidates = data.candidates || [];
                 renderCandidates(allCandidates);
+
+                if (data.archived && allCandidates.length === 0) {
+                    candidatesList.innerHTML = '<tr><td colspan="2" class="no-results">📌 Archived announcement. Detailed candidate list is no longer hosted on the corporate portal.</td></tr>';
+                }
             } catch (err) {
                 document.body.innerHTML = `<div class="error-msg"><h1>404</h1><p>Announcement Not Found</p><a href="/">Return Home</a></div>`;
             }
         }
 
         function renderCandidates(candidates) {
-            candidatesList.innerHTML = '';
-            if (candidates.length === 0) {
+            if (!candidates || candidates.length === 0) {
                 candidatesList.innerHTML = '<tr><td colspan="2" class="no-results">No candidates found</td></tr>';
                 return;
             }
-            candidates.forEach(c => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td class="col-no">${c.no}</td>
-                    <td class="col-name">${c.name}</td>
-                `;
-                candidatesList.appendChild(row);
-            });
+            // Batch render to avoid DOM reflows
+            candidatesList.innerHTML = candidates.map(c => `
+                <tr>
+                    <td class="col-no">${escapeHtml(c.no)}</td>
+                    <td class="col-name">${escapeHtml(c.name)}</td>
+                </tr>
+            `).join('');
         }
 
         searchInput.addEventListener('input', (e) => {

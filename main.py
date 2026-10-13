@@ -11,6 +11,7 @@ import logging
 import os
 import signal
 import sys
+from datetime import datetime
 from aiohttp import web
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -20,9 +21,21 @@ from config import (
     CHECK_INTERVAL_SECONDS,
     DATA_DIR,
     TELEGRAM_BOT_TOKEN,
+    QUIET_HOURS_ENABLED,
+    QUIET_HOURS_START,
+    QUIET_HOURS_END,
+    BOT_TIMEZONE,
 )
 from scraper import fetch_results
-from bot import build_application, load_subscribers, send_notification, matches_role_filter
+from bot import (
+    build_application,
+    load_subscribers,
+    send_notification,
+    matches_role_filter,
+    is_pilot_result,
+    is_cabin_crew_result,
+    is_amt_result,
+)
 from result_parser import save_result
 from database import (
     init_db,
@@ -31,7 +44,11 @@ from database import (
     save_last_results as db_save_last_results,
     get_announcement,
     get_subscribers_with_filters,
+    save_announcements_batch,
 )
+
+# ─── Base Directory ──────────────────────────────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ─── Logging Setup ───────────────────────────────────────────────────────────
 
@@ -42,10 +59,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger("et_results_bot")
 
-# ─── In-Memory Sent Guard ────────────────────────────────────────────────────
+# Silence noisy HTTP client and access polling logs on free tier hosting
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+
+# ─── In-Memory Sent Guard & Quiet Hours Tracking ──────────────────────────────
 # Tracks result IDs already sent this session to prevent duplicate notifications
 # even if the file state hasn't been flushed yet.
 _already_notified: set[str] = set()
+_in_quiet_mode: bool = False
+
+
+def is_quiet_hours() -> bool:
+    """
+    Check if the current time is within quiet hours (default: 6 PM to 7 AM East Africa Time).
+    During quiet hours, automated scraping and DB checks are paused to save resources.
+    """
+    global _in_quiet_mode
+    if not QUIET_HOURS_ENABLED:
+        return False
+
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(BOT_TIMEZONE)
+    except Exception:
+        from datetime import timezone, timedelta
+        tz = timezone(timedelta(hours=3))
+
+    now = datetime.now(tz)
+    current_hour = now.hour
+
+    if QUIET_HOURS_START > QUIET_HOURS_END:
+        # Crosses midnight (e.g. 18 to 7: 18:00–23:59 and 00:00–06:59)
+        quiet = current_hour >= QUIET_HOURS_START or current_hour < QUIET_HOURS_END
+    else:
+        quiet = QUIET_HOURS_START <= current_hour < QUIET_HOURS_END
+
+    if quiet and not _in_quiet_mode:
+        _in_quiet_mode = True
+        logger.info(
+            f"🌙 Entering quiet hours ({QUIET_HOURS_START}:00 - {QUIET_HOURS_END}:00 {BOT_TIMEZONE}). "
+            "Automated checks paused until morning."
+        )
+    elif not quiet and _in_quiet_mode:
+        _in_quiet_mode = False
+        logger.info(
+            f"☀️ Exiting quiet hours ({now.strftime('%H:%M')} {BOT_TIMEZONE}). "
+            "Automated checks resumed!"
+        )
+
+    return quiet
 
 
 # ─── State Management ───────────────────────────────────────────────────────
@@ -64,11 +127,10 @@ def save_last_results(results: dict[str, dict]):
 
 async def seed_initial_state():
     """
-    If there is no saved state (first run / fresh deploy), scrape the page
-    once and save all current results WITHOUT sending any notifications.
-    This prevents spamming users with all existing results on startup.
-    Also pre-populates the in-memory sent guard so existing results are
-    never treated as new even if the file state is stale.
+    On startup, load saved state into the in-memory sent guard so existing results
+    are never re-sent as notifications. Also fetch current results to batch-save
+    any missing announcements (with candidate lists) into Neon Postgres in 1 batch,
+    ensuring 'View Candidates' works even after redeploying.
     """
     global _already_notified
     last_results = load_last_results()
@@ -76,22 +138,22 @@ async def seed_initial_state():
         logger.info(f"📂 Found existing state with {len(last_results)} tracked results.")
         # Pre-populate the in-memory guard from saved state
         _already_notified.update(last_results.keys())
-        return  # Already have state, nothing to seed
 
-    logger.info("🌱 First run detected — seeding initial state (no notifications)...")
+    # Pre-warm/sync candidate roster for current announcements
+    logger.info("🌱 Ensuring all current announcements and candidate rosters are synchronized...")
     current_results = await fetch_results()
     if current_results:
         all_results = {r["id"]: r for r in current_results}
-        save_last_results(all_results)
-        _already_notified.update(all_results.keys())
-        # Persist each baseline result's full data (candidates included) immediately,
-        # so it's never lost even if ET later removes it from the website.
-        for result in current_results:
-            save_result(result)
-        logger.info(f"✅ Saved {len(all_results)} existing results as baseline. "
-                     "Only NEW results from now on will trigger notifications.")
+        if not last_results:
+            save_last_results(all_results)
+            _already_notified.update(all_results.keys())
+            logger.info(f"✅ Saved {len(all_results)} existing results as baseline.")
+
+        # Batch-save candidate lists in one fast DB query
+        save_announcements_batch(current_results)
+        logger.info(f"✅ Synchronized {len(current_results)} announcement details in database.")
     else:
-        logger.warning("Could not fetch results for seeding. Will retry on next check.")
+        logger.warning("Could not fetch results during startup seeding. Will retry on next check.")
 
 
 async def check_for_new_results(app: Application):
@@ -103,6 +165,9 @@ async def check_for_new_results(app: Application):
     AND an in-memory set (_already_notified) that survives across cycles
     within the same session.
     """
+    if is_quiet_hours():
+        return
+
     global _already_notified
     logger.info("🔍 Checking for new results...")
 
@@ -118,15 +183,11 @@ async def check_for_new_results(app: Application):
         all_results = {r["id"]: r for r in current_results}
         save_last_results(all_results)
         _already_notified.update(all_results.keys())
-        # Save full announcement data (with candidates) on first detection
-        for result in current_results:
-            save_result(result)
+        save_announcements_batch(current_results)
         logger.info(f"📂 No prior state found. Saved {len(all_results)} results as baseline.")
         return
 
     # Find results that are new in BOTH the file state AND the in-memory guard.
-    # The in-memory guard catches duplicates within the same session even if the
-    # file hasn't been written yet (race condition protection).
     new_results = [
         r for r in current_results
         if r["id"] not in last_results and r["id"] not in _already_notified
@@ -135,11 +196,8 @@ async def check_for_new_results(app: Application):
     if new_results:
         logger.info(f"🆕 Found {len(new_results)} NEW result(s)!")
 
-        # Save full announcement data (with candidates) ONLY for genuinely new
-        # results.  Previously this wrote ALL results every cycle, hammering
-        # the DB with redundant INSERT/UPDATEs (~20 queries every 30 seconds).
-        for result in new_results:
-            save_result(result)
+        # Batch save full announcement data (with candidates) in a single DB query
+        save_announcements_batch(new_results)
 
         # Mark as notified in-memory BEFORE sending so that if the bot restarts
         # mid-send, we don't re-send on the next cycle.
@@ -158,10 +216,28 @@ async def check_for_new_results(app: Application):
             logger.info(f"📣 Evaluating notifications for {len(subscribers_map)} subscriber(s)...")
             for result in new_results:
                 pos_title = result.get("position", "Unknown")
+                is_pilot = is_pilot_result(result)
+                is_cabin = is_cabin_crew_result(result)
+                is_amt = is_amt_result(result)
+                is_aviation = is_pilot or is_cabin or is_amt
+
+                def _matches(rf: str) -> bool:
+                    if rf == "all":
+                        return True
+                    elif rf == "pilot":
+                        return is_pilot
+                    elif rf == "cabin":
+                        return is_cabin
+                    elif rf == "amt":
+                        return is_amt
+                    elif rf in ("aviation", "crew"):
+                        return is_aviation
+                    return True
+
                 # Filter subscribers whose preference matches this announcement
                 recipients = [
                     cid for cid, r_filter in subscribers_map.items()
-                    if matches_role_filter(result, r_filter)
+                    if _matches(r_filter)
                 ]
 
                 logger.info(
@@ -220,7 +296,7 @@ async def handle_get_result_api(request):
 
 async def handle_serve_viewer(request):
     """Serve the index.html viewer for any /results/{id} route."""
-    viewer_path = os.path.join(os.getcwd(), "web", "index.html")
+    viewer_path = os.path.join(BASE_DIR, "web", "index.html")
     if not os.path.exists(viewer_path):
         return web.Response(text="Viewer template not found", status=500)
     return web.FileResponse(viewer_path)
@@ -240,7 +316,7 @@ async def start_web_server():
     app.router.add_get("/results/{id}", handle_serve_viewer)
     
     # Static files (CSS, JS)
-    static_path = os.path.join(os.getcwd(), "web")
+    static_path = os.path.join(BASE_DIR, "web")
     app.router.add_static("/static/", static_path)
     
     runner = web.AppRunner(app)
@@ -265,6 +341,8 @@ async def main():
     logger.info("=" * 60)
     logger.info("  Ethiopian Airlines Results Checker Bot")
     logger.info(f"  Check interval: every {CHECK_INTERVAL_SECONDS} seconds")
+    if QUIET_HOURS_ENABLED:
+        logger.info(f"  Quiet hours: {QUIET_HOURS_START}:00 to {QUIET_HOURS_END}:00 ({BOT_TIMEZONE})")
     logger.info("=" * 60)
 
     # Initialize database tables and migrate any existing local files
