@@ -5,7 +5,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "30"))
+CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "180"))
 ET_RESULTS_URL = "https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results"
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")

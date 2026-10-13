@@ -113,17 +113,14 @@ async def check_for_new_results(app: Application):
 
     last_results = load_last_results()
 
-    # Persist every currently-live result's full data (candidates included) right away.
-    # This is intentionally unconditional so candidate lists are captured instantly and
-    # survive even if ET later edits or removes the announcement from the website.
-    for result in current_results:
-        save_result(result)
-
     # Safety: if no saved state exists yet, save and skip (don't spam)
     if not last_results:
         all_results = {r["id"]: r for r in current_results}
         save_last_results(all_results)
         _already_notified.update(all_results.keys())
+        # Save full announcement data (with candidates) on first detection
+        for result in current_results:
+            save_result(result)
         logger.info(f"📂 No prior state found. Saved {len(all_results)} results as baseline.")
         return
 
@@ -137,6 +134,12 @@ async def check_for_new_results(app: Application):
 
     if new_results:
         logger.info(f"🆕 Found {len(new_results)} NEW result(s)!")
+
+        # Save full announcement data (with candidates) ONLY for genuinely new
+        # results.  Previously this wrote ALL results every cycle, hammering
+        # the DB with redundant INSERT/UPDATEs (~20 queries every 30 seconds).
+        for result in new_results:
+            save_result(result)
 
         # Mark as notified in-memory BEFORE sending so that if the bot restarts
         # mid-send, we don't re-send on the next cycle.
@@ -183,9 +186,13 @@ async def check_for_new_results(app: Application):
                 await asyncio.gather(*[_send_one(cid) for cid in recipients])
     else:
         logger.info("No new results found.")
-        # Still update the state in case results were removed from the page
-        all_results = {r["id"]: r for r in current_results}
-        save_last_results(all_results)
+        # Only update state if the set of tracked results actually changed
+        # (e.g. a result was removed from or added back to the page)
+        current_ids = {r["id"] for r in current_results}
+        if current_ids != set(last_results.keys()):
+            all_results = {r["id"]: r for r in current_results}
+            save_last_results(all_results)
+            logger.info(f"📂 Result set changed. Updated tracked state ({len(all_results)} results).")
 
 
 # ─── Health Check Server ───────────────────────────────────────────────────
