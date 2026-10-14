@@ -338,6 +338,10 @@ async def main():
         logger.error("❌ TELEGRAM_BOT_TOKEN not set in .env file!")
         sys.exit(1)
 
+    # 1. Start the web server immediately so Render detects port binding in <100ms
+    # and external cron pingers / health checks get 200 OK instantly without timing out.
+    await start_web_server()
+
     logger.info("=" * 60)
     logger.info("  Ethiopian Airlines Results Checker Bot")
     logger.info(f"  Check interval: every {CHECK_INTERVAL_SECONDS} seconds")
@@ -345,11 +349,11 @@ async def main():
         logger.info(f"  Quiet hours: {QUIET_HOURS_START}:00 to {QUIET_HOURS_END}:00 ({BOT_TIMEZONE})")
     logger.info("=" * 60)
 
-    # Initialize database tables and migrate any existing local files
+    # 2. Initialize database tables and migrate any existing local files
     init_db()
     migrate_local_data()
 
-    # Build the Telegram bot application
+    # 3. Build the Telegram bot application
     app = build_application()
 
     # Initialize the bot
@@ -369,9 +373,6 @@ async def main():
 
     # Start polling for Telegram messages
     await app.updater.start_polling(drop_pending_updates=True)
-
-    # Start the web server for free hosting
-    await start_web_server()
 
     logger.info("✅ Bot is running! Send /start to your bot on Telegram.")
 
