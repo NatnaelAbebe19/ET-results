@@ -22,3 +22,7 @@ QUIET_HOURS_ENABLED = os.getenv("QUIET_HOURS_ENABLED", "true").lower() in ("true
 QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START", "18"))  # 18:00 (6 PM)
 QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "7"))       # 07:00 (7 AM)
 BOT_TIMEZONE = os.getenv("BOT_TIMEZONE", "Africa/Addis_Ababa")  # EAT (UTC+3)
+
+# Discord Webhook Notifications (optional — runs alongside Telegram)
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+DISCORD_ROLE_FILTER = os.getenv("DISCORD_ROLE_FILTER", "all").strip().lower()

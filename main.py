@@ -25,8 +25,13 @@ from config import (
     QUIET_HOURS_START,
     QUIET_HOURS_END,
     BOT_TIMEZONE,
+    DISCORD_ROLE_FILTER,
 )
 from scraper import fetch_results
+from discord_notifier import (
+    is_discord_configured,
+    send_discord_notifications,
+)
 from bot import (
     build_application,
     load_subscribers,
@@ -209,11 +214,13 @@ async def check_for_new_results(app: Application):
         save_last_results(all_results)
         logger.info(f"✅ State saved. Total results tracked: {len(all_results)}")
 
-        subscribers_map = get_subscribers_with_filters()
-        if not subscribers_map:
-            logger.warning("No subscribers yet. New results won't be sent to anyone.")
-        else:
-            logger.info(f"📣 Evaluating notifications for {len(subscribers_map)} subscriber(s)...")
+        async def _notify_telegram():
+            subscribers_map = get_subscribers_with_filters()
+            if not subscribers_map:
+                logger.warning("No Telegram subscribers yet.")
+                return
+
+            logger.info(f"📣 Evaluating Telegram notifications for {len(subscribers_map)} subscriber(s)...")
             for result in new_results:
                 pos_title = result.get("position", "Unknown")
                 is_pilot = is_pilot_result(result)
@@ -241,7 +248,7 @@ async def check_for_new_results(app: Application):
                 ]
 
                 logger.info(
-                    f"📤 Sending notification for: {pos_title[:50]} "
+                    f"📤 Sending Telegram notification for: {pos_title[:50]} "
                     f"to {len(recipients)}/{len(subscribers_map)} matched subscriber(s)..."
                 )
 
@@ -260,6 +267,21 @@ async def check_for_new_results(app: Application):
                             logger.error(f"Unexpected error sending to {chat_id}: {e}")
 
                 await asyncio.gather(*[_send_one(cid) for cid in recipients])
+
+        async def _notify_discord():
+            if not is_discord_configured():
+                return
+            await send_discord_notifications(new_results)
+
+        # Dispatch Telegram and Discord notifications concurrently and independently
+        results_status = await asyncio.gather(
+            _notify_telegram(),
+            _notify_discord(),
+            return_exceptions=True,
+        )
+        for channel_name, outcome in zip(("Telegram", "Discord"), results_status):
+            if isinstance(outcome, Exception):
+                logger.error(f"Unexpected error during {channel_name} notifications: {outcome}")
     else:
         logger.info("No new results found.")
         # Only update state if the set of tracked results actually changed
@@ -347,6 +369,10 @@ async def main():
     logger.info(f"  Check interval: every {CHECK_INTERVAL_SECONDS} seconds")
     if QUIET_HOURS_ENABLED:
         logger.info(f"  Quiet hours: {QUIET_HOURS_START}:00 to {QUIET_HOURS_END}:00 ({BOT_TIMEZONE})")
+    if is_discord_configured():
+        logger.info(f"  Discord alerts: ENABLED (filter: {DISCORD_ROLE_FILTER})")
+    else:
+        logger.info("  Discord alerts: disabled (set DISCORD_WEBHOOK_URL to enable)")
     logger.info("=" * 60)
 
     # 2. Initialize database tables and migrate any existing local files
