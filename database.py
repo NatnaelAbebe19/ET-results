@@ -23,6 +23,7 @@ from config import (
     DATA_DIR,
     SUBSCRIBERS_FILE,
     SUBSCRIBER_PREFS_FILE,
+    DISCORD_SUBSCRIBERS_FILE,
     LAST_RESULTS_FILE,
 )
 
@@ -150,6 +151,16 @@ def init_db():
                         updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
+
+                # 4. Discord subscribers table (channels or DM users with role filters)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS discord_subscribers (
+                        target_id BIGINT PRIMARY KEY,
+                        target_type VARCHAR(16) NOT NULL DEFAULT 'channel',
+                        role_filter VARCHAR(32) DEFAULT 'all',
+                        subscribed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
         logger.info("✅ Database tables verified/initialized in Neon PostgreSQL.")
     except Exception as e:
         logger.error(f"❌ Failed to initialize database tables: {e}", exc_info=True)
@@ -254,6 +265,37 @@ def migrate_local_data():
                 logger.info(f"✅ Migrated {len(announcement_items)} announcement detail file(s) to Neon in 1 batch.")
         except Exception as e:
             logger.warning(f"Failed to migrate announcements folder: {e}")
+
+    # 4. Migrate local Discord subscribers
+    if os.path.exists(DISCORD_SUBSCRIBERS_FILE):
+        try:
+            with open(DISCORD_SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
+                d_subs = json.load(f)
+                if isinstance(d_subs, dict) and d_subs:
+                    tuples = []
+                    for tid, info in d_subs.items():
+                        if isinstance(info, dict):
+                            t_type = (info.get("target_type") or "channel").lower()
+                            r_filter = (info.get("role_filter") or "all").lower()
+                        else:
+                            t_type = "channel"
+                            r_filter = str(info or "all").lower()
+                        tuples.append((int(tid), t_type, r_filter))
+                    if tuples:
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cur:
+                                execute_values(
+                                    cur,
+                                    """
+                                    INSERT INTO discord_subscribers (target_id, target_type, role_filter)
+                                    VALUES %s
+                                    ON CONFLICT (target_id) DO NOTHING
+                                    """,
+                                    tuples,
+                                )
+                        logger.info(f"✅ Migrated {len(tuples)} Discord subscriber(s) to Neon.")
+        except Exception as e:
+            logger.warning(f"Failed to migrate local Discord subscribers: {e}")
 
 
 # ─── Subscriber API ─────────────────────────────────────────────────────────
@@ -457,6 +499,188 @@ def remove_subscriber(chat_id: int) -> bool:
         success = True
     except Exception as e:
         logger.warning(f"Could not update local subscribers file: {e}")
+
+    return success
+
+
+# ─── Discord Subscriber API ──────────────────────────────────────────────────
+
+def _load_local_discord_subscribers() -> dict[str, dict[str, str]]:
+    """Load local Discord subscribers map {str(target_id): {target_type, role_filter}}."""
+    if os.path.exists(DISCORD_SUBSCRIBERS_FILE):
+        try:
+            with open(DISCORD_SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.warning(f"Failed to read local Discord subscribers: {e}")
+    return {}
+
+
+def _save_local_discord_subscribers(subs: dict[str, dict[str, str]]):
+    """Save local Discord subscribers map to file."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(DISCORD_SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(subs, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to write local Discord subscribers: {e}")
+
+
+def get_discord_subscribers_with_filters() -> dict[int, dict[str, str]]:
+    """
+    Load all Discord subscribers mapped to their target type and role filter:
+    {target_id: {"target_type": "channel"|"user", "role_filter": "all"|"pilot"|...}}
+    """
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT target_id, COALESCE(target_type, 'channel'), COALESCE(role_filter, 'all') "
+                        "FROM discord_subscribers;"
+                    )
+                    rows = cur.fetchall()
+                    return {
+                        int(row[0]): {
+                            "target_type": (row[1] or "channel").lower(),
+                            "role_filter": (row[2] or "all").lower(),
+                        }
+                        for row in rows
+                    }
+        except Exception as e:
+            logger.error(f"Error reading Discord subscribers from DB: {e}. Falling back to file.")
+
+    local = _load_local_discord_subscribers()
+    result: dict[int, dict[str, str]] = {}
+    for tid, info in local.items():
+        try:
+            if isinstance(info, dict):
+                result[int(tid)] = {
+                    "target_type": (info.get("target_type") or "channel").lower(),
+                    "role_filter": (info.get("role_filter") or "all").lower(),
+                }
+            else:
+                result[int(tid)] = {"target_type": "channel", "role_filter": str(info or "all").lower()}
+        except ValueError:
+            continue
+    return result
+
+
+def get_discord_subscriber_filter(target_id: int) -> str:
+    """Get the notification role filter for a specific Discord channel or user ID."""
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COALESCE(role_filter, 'all') FROM discord_subscribers WHERE target_id = %s;",
+                        (target_id,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return row[0].lower()
+        except Exception as e:
+            logger.error(f"Error reading Discord filter for {target_id}: {e}")
+
+    local = _load_local_discord_subscribers()
+    info = local.get(str(target_id))
+    if isinstance(info, dict):
+        return (info.get("role_filter") or "all").lower()
+    return "all"
+
+
+def add_discord_subscriber(target_id: int, target_type: str = "channel", role_filter: str = "all") -> bool:
+    """Subscribe a Discord channel or DM user (preserving existing filter if already subscribed)."""
+    target_type = (target_type or "channel").lower()
+    role_filter = (role_filter or "all").lower()
+    success = False
+
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO discord_subscribers (target_id, target_type, role_filter)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (target_id) DO NOTHING;
+                        """,
+                        (target_id, target_type, role_filter),
+                    )
+            success = True
+        except Exception as e:
+            logger.error(f"Error adding Discord subscriber {target_id}: {e}")
+
+    try:
+        local = _load_local_discord_subscribers()
+        if str(target_id) not in local:
+            local[str(target_id)] = {"target_type": target_type, "role_filter": role_filter}
+            _save_local_discord_subscribers(local)
+        success = True
+    except Exception as e:
+        logger.warning(f"Could not save Discord subscriber locally: {e}")
+
+    return success
+
+
+def set_discord_subscriber_filter(target_id: int, role_filter: str, target_type: str = "channel") -> bool:
+    """Set notification role filter for a Discord channel or DM user (subscribing if needed)."""
+    target_type = (target_type or "channel").lower()
+    role_filter = (role_filter or "all").lower()
+    success = False
+
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO discord_subscribers (target_id, target_type, role_filter)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (target_id) DO UPDATE SET
+                            target_type = EXCLUDED.target_type,
+                            role_filter = EXCLUDED.role_filter;
+                        """,
+                        (target_id, target_type, role_filter),
+                    )
+            success = True
+        except Exception as e:
+            logger.error(f"Error setting Discord role filter for {target_id}: {e}")
+
+    try:
+        local = _load_local_discord_subscribers()
+        local[str(target_id)] = {"target_type": target_type, "role_filter": role_filter}
+        _save_local_discord_subscribers(local)
+        success = True
+    except Exception as e:
+        logger.warning(f"Could not save Discord filter locally: {e}")
+
+    return success
+
+
+def remove_discord_subscriber(target_id: int) -> bool:
+    """Unsubscribe a Discord channel or DM user from notifications."""
+    success = False
+
+    if is_db_configured():
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM discord_subscribers WHERE target_id = %s;", (target_id,))
+            success = True
+        except Exception as e:
+            logger.error(f"Error removing Discord subscriber {target_id}: {e}")
+
+    try:
+        local = _load_local_discord_subscribers()
+        if str(target_id) in local:
+            del local[str(target_id)]
+            _save_local_discord_subscribers(local)
+        success = True
+    except Exception as e:
+        logger.warning(f"Could not update local Discord subscribers file: {e}")
 
     return success
 

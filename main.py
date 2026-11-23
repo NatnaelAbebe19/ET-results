@@ -21,12 +21,33 @@ from config import (
     CHECK_INTERVAL_SECONDS,
     DATA_DIR,
     TELEGRAM_BOT_TOKEN,
+    DISCORD_BOT_TOKEN,
     QUIET_HOURS_ENABLED,
     QUIET_HOURS_START,
     QUIET_HOURS_END,
     BOT_TIMEZONE,
+    DISCORD_ROLE_FILTER,
 )
 from scraper import fetch_results
+from discord_notifier import (
+    is_discord_configured,
+    send_discord_notifications,
+)
+try:
+    from discord_bot import (
+        build_discord_bot,
+        is_discord_bot_configured,
+        send_discord_bot_notifications,
+    )
+    DISCORD_BOT_AVAILABLE = True
+except ImportError:
+    DISCORD_BOT_AVAILABLE = False
+
+    def is_discord_bot_configured() -> bool:
+        return bool(DISCORD_BOT_TOKEN)
+
+    build_discord_bot = None
+    send_discord_bot_notifications = None
 from bot import (
     build_application,
     load_subscribers,
@@ -62,6 +83,7 @@ logger = logging.getLogger("et_results_bot")
 # Silence noisy HTTP client and access polling logs on free tier hosting
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+logging.getLogger("discord.http").setLevel(logging.WARNING)
 
 # ─── In-Memory Sent Guard & Quiet Hours Tracking ──────────────────────────────
 # Tracks result IDs already sent this session to prevent duplicate notifications
@@ -156,7 +178,7 @@ async def seed_initial_state():
         logger.warning("Could not fetch results during startup seeding. Will retry on next check.")
 
 
-async def check_for_new_results(app: Application):
+async def check_for_new_results(app: Application, discord_bot=None):
     """
     Scheduled job: scrape the results page, compare with saved state,
     and send notifications for any new entries.
@@ -209,11 +231,13 @@ async def check_for_new_results(app: Application):
         save_last_results(all_results)
         logger.info(f"✅ State saved. Total results tracked: {len(all_results)}")
 
-        subscribers_map = get_subscribers_with_filters()
-        if not subscribers_map:
-            logger.warning("No subscribers yet. New results won't be sent to anyone.")
-        else:
-            logger.info(f"📣 Evaluating notifications for {len(subscribers_map)} subscriber(s)...")
+        async def _notify_telegram():
+            subscribers_map = get_subscribers_with_filters()
+            if not subscribers_map:
+                logger.warning("No Telegram subscribers yet.")
+                return
+
+            logger.info(f"📣 Evaluating Telegram notifications for {len(subscribers_map)} subscriber(s)...")
             for result in new_results:
                 pos_title = result.get("position", "Unknown")
                 is_pilot = is_pilot_result(result)
@@ -241,7 +265,7 @@ async def check_for_new_results(app: Application):
                 ]
 
                 logger.info(
-                    f"📤 Sending notification for: {pos_title[:50]} "
+                    f"📤 Sending Telegram notification for: {pos_title[:50]} "
                     f"to {len(recipients)}/{len(subscribers_map)} matched subscriber(s)..."
                 )
 
@@ -260,6 +284,27 @@ async def check_for_new_results(app: Application):
                             logger.error(f"Unexpected error sending to {chat_id}: {e}")
 
                 await asyncio.gather(*[_send_one(cid) for cid in recipients])
+
+        async def _notify_discord_bot():
+            if discord_bot is None or send_discord_bot_notifications is None:
+                return
+            await send_discord_bot_notifications(discord_bot, new_results)
+
+        async def _notify_discord_webhook():
+            if not is_discord_configured():
+                return
+            await send_discord_notifications(new_results)
+
+        # Dispatch Telegram, Discord Bot, and optional Discord Webhook concurrently and independently
+        results_status = await asyncio.gather(
+            _notify_telegram(),
+            _notify_discord_bot(),
+            _notify_discord_webhook(),
+            return_exceptions=True,
+        )
+        for channel_name, outcome in zip(("Telegram", "Discord Bot", "Discord Webhook"), results_status):
+            if isinstance(outcome, Exception):
+                logger.error(f"Unexpected error during {channel_name} notifications: {outcome}")
     else:
         logger.info("No new results found.")
         # Only update state if the set of tracked results actually changed
@@ -347,6 +392,15 @@ async def main():
     logger.info(f"  Check interval: every {CHECK_INTERVAL_SECONDS} seconds")
     if QUIET_HOURS_ENABLED:
         logger.info(f"  Quiet hours: {QUIET_HOURS_START}:00 to {QUIET_HOURS_END}:00 ({BOT_TIMEZONE})")
+    if is_discord_bot_configured():
+        if DISCORD_BOT_AVAILABLE:
+            logger.info("  Discord bot: ENABLED (interactive /filter commands & buttons)")
+        else:
+            logger.warning("  Discord bot: DISCORD_BOT_TOKEN is set, but discord.py is not installed!")
+    else:
+        logger.info("  Discord bot: disabled (set DISCORD_BOT_TOKEN to enable)")
+    if is_discord_configured():
+        logger.info(f"  Discord webhook: ENABLED (filter: {DISCORD_ROLE_FILTER})")
     logger.info("=" * 60)
 
     # 2. Initialize database tables and migrate any existing local files
@@ -374,7 +428,24 @@ async def main():
     # Start polling for Telegram messages
     await app.updater.start_polling(drop_pending_updates=True)
 
-    logger.info("✅ Bot is running! Send /start to your bot on Telegram.")
+    logger.info("✅ Telegram bot is running! Send /start to your bot on Telegram.")
+
+    # 4. Start interactive Discord bot concurrently (if DISCORD_BOT_TOKEN is configured)
+    discord_bot = None
+    discord_task = None
+    if is_discord_bot_configured() and DISCORD_BOT_AVAILABLE and build_discord_bot is not None:
+        discord_bot = build_discord_bot()
+
+        async def _run_discord_bot():
+            try:
+                await discord_bot.start(DISCORD_BOT_TOKEN)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"❌ Discord bot stopped unexpectedly (Telegram unaffected): {e}")
+
+        discord_task = asyncio.create_task(_run_discord_bot(), name="discord_bot")
+        logger.info("💬 Starting Discord bot alongside Telegram... Use /start or /filter in Discord.")
 
     # Set up the periodic scheduler
     scheduler = AsyncIOScheduler()
@@ -382,7 +453,7 @@ async def main():
         check_for_new_results,
         "interval",
         seconds=CHECK_INTERVAL_SECONDS,
-        args=[app],
+        args=[app, discord_bot],
         id="check_results",
         name="Check ET Results",
         max_instances=1,
@@ -437,6 +508,17 @@ async def main():
         await stop_event.wait()
     finally:
         scheduler.shutdown(wait=False)
+        if discord_bot is not None and not discord_bot.is_closed():
+            try:
+                await discord_bot.close()
+            except Exception as e:
+                logger.debug(f"Error closing Discord bot: {e}")
+        if discord_task is not None and not discord_task.done():
+            discord_task.cancel()
+            try:
+                await discord_task
+            except asyncio.CancelledError:
+                pass
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
