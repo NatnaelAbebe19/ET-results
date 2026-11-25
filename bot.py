@@ -83,7 +83,18 @@ def format_summary_message(results: list[dict]) -> str:
 
 
 _MD_ESCAPE_REGEX = re.compile(r"([_*\[\]()~`>#+\-=|{}.!])")
-AMT_WORD_REGEX = re.compile(r"\bamt\b")
+AMT_WORD_REGEX = re.compile(r"\bamts?\b")
+PILOT_REGEX = re.compile(
+    r"\b(?:co-?)?pilots?\b(?!\s+(?:project|program|study))"
+    r"|\bfirst\s+officers?\b"
+    r"|\bcadets?\b"
+    r"|\bcockpit\b"
+)
+CAPTAIN_WORD_REGEX = re.compile(r"\bcaptains?\b")
+NON_AVIATION_CAPTAIN_REGEX = re.compile(
+    r"\b(?:bell|banquet|restaurant|dining|service|hotel|kitchen|bar|waiter|security|team)\s+captains?\b"
+)
+CABIN_STEWARDESS_REGEX = re.compile(r"\bstewardess(?:es)?\b")
 
 
 def _escape_md(text: str) -> str:
@@ -99,7 +110,8 @@ def is_pilot_result(result: dict) -> bool:
     """
     Check if announcement is for Pilots.
     Matches titles like 'ET-SPONSORED TRAINEE PILOT CANDIDATES', 'TRAINEE PILOT CANDIDATES',
-    'CADET PILOT', 'FIRST OFFICER', 'CAPTAIN', etc.
+    'CADET PILOT', 'FIRST OFFICER', 'CAPTAIN', etc., while avoiding hospitality titles
+    such as 'Bell Captain' or 'Banquet Captain'.
     """
     fields = [
         result.get("position", ""),
@@ -107,14 +119,13 @@ def is_pilot_result(result: dict) -> bool:
         result.get("description", ""),
     ]
     full_text = " ".join(fields).lower()
-    pilot_keywords = [
-        "pilot",
-        "first officer",
-        "captain",
-        "cadet",
-        "cockpit",
-    ]
-    return any(k in full_text for k in pilot_keywords)
+    if PILOT_REGEX.search(full_text):
+        return True
+    if CAPTAIN_WORD_REGEX.search(full_text):
+        cleaned = NON_AVIATION_CAPTAIN_REGEX.sub("", full_text)
+        if CAPTAIN_WORD_REGEX.search(cleaned):
+            return True
+    return False
 
 
 def is_cabin_crew_result(result: dict) -> bool:
@@ -122,6 +133,8 @@ def is_cabin_crew_result(result: dict) -> bool:
     Check if announcement is for Cabin Crew.
     Matches titles like 'ET-SPONSORED TRAINEE CABIN CREW APPLICANT’S', 'CABIN CREW TRAINEE',
     'FLIGHT ATTENDANT', 'AIR HOSTESS', etc.
+    Note: bare 'steward' / 'stewarding' is intentionally excluded because Ethiopian Airlines
+    uses 'Steward' / 'Stewarding' for hotel & catering kitchen roles (e.g. Skylight Hotel).
     """
     fields = [
         result.get("position", ""),
@@ -134,9 +147,13 @@ def is_cabin_crew_result(result: dict) -> bool:
         "flight attendant",
         "air hostess",
         "cabin attendant",
-        "steward",
+        "flight steward",
+        "air steward",
+        "cabin steward",
     ]
-    return any(k in full_text for k in cabin_keywords)
+    if any(k in full_text for k in cabin_keywords):
+        return True
+    return bool(CABIN_STEWARDESS_REGEX.search(full_text))
 
 
 def is_amt_result(result: dict) -> bool:
@@ -161,7 +178,6 @@ def is_amt_result(result: dict) -> bool:
     full_text = " ".join(fields).lower()
 
     amt_keywords = [
-        "amt",
         "a/c maintenance",
         "a/c structure",
         "a/c cabin maintenance",
