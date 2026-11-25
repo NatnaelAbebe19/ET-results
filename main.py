@@ -21,6 +21,8 @@ from config import (
     CHECK_INTERVAL_SECONDS,
     DATA_DIR,
     TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHANNEL_IDS,
+    TELEGRAM_CHANNEL_ROLE_FILTER,
     DISCORD_BOT_TOKEN,
     QUIET_HOURS_ENABLED,
     QUIET_HOURS_START,
@@ -52,6 +54,7 @@ from bot import (
     build_application,
     load_subscribers,
     send_notification,
+    send_channel_notification,
     matches_role_filter,
     is_pilot_result,
     is_cabin_crew_result,
@@ -285,6 +288,19 @@ async def check_for_new_results(app: Application, discord_bot=None):
 
                 await asyncio.gather(*[_send_one(cid) for cid in recipients])
 
+        async def _notify_telegram_channels():
+            if not TELEGRAM_CHANNEL_IDS:
+                return
+            for result in new_results:
+                if not matches_role_filter(result, TELEGRAM_CHANNEL_ROLE_FILTER):
+                    continue
+                for channel_id in TELEGRAM_CHANNEL_IDS:
+                    if await send_channel_notification(app, channel_id, result):
+                        logger.info(
+                            f"📢 Posted to Telegram channel {channel_id}: "
+                            f"{result.get('position', 'Unknown')[:50]}"
+                        )
+
         async def _notify_discord_bot():
             if discord_bot is None or send_discord_bot_notifications is None:
                 return
@@ -298,11 +314,13 @@ async def check_for_new_results(app: Application, discord_bot=None):
         # Dispatch Telegram, Discord Bot, and optional Discord Webhook concurrently and independently
         results_status = await asyncio.gather(
             _notify_telegram(),
+            _notify_telegram_channels(),
             _notify_discord_bot(),
             _notify_discord_webhook(),
             return_exceptions=True,
         )
-        for channel_name, outcome in zip(("Telegram", "Discord Bot", "Discord Webhook"), results_status):
+        channel_names = ("Telegram", "Telegram Channel", "Discord Bot", "Discord Webhook")
+        for channel_name, outcome in zip(channel_names, results_status):
             if isinstance(outcome, Exception):
                 logger.error(f"Unexpected error during {channel_name} notifications: {outcome}")
     else:
@@ -392,6 +410,13 @@ async def main():
     logger.info(f"  Check interval: every {CHECK_INTERVAL_SECONDS} seconds")
     if QUIET_HOURS_ENABLED:
         logger.info(f"  Quiet hours: {QUIET_HOURS_START}:00 to {QUIET_HOURS_END}:00 ({BOT_TIMEZONE})")
+    if TELEGRAM_CHANNEL_IDS:
+        logger.info(
+            f"  Telegram channel(s): {', '.join(str(c) for c in TELEGRAM_CHANNEL_IDS)} "
+            f"(filter: {TELEGRAM_CHANNEL_ROLE_FILTER})"
+        )
+    else:
+        logger.info("  Telegram channel: disabled (set TELEGRAM_CHANNEL_IDS to enable)")
     if is_discord_bot_configured():
         if DISCORD_BOT_AVAILABLE:
             logger.info("  Discord bot: ENABLED (interactive /filter commands & buttons)")

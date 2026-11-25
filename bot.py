@@ -14,6 +14,8 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from config import TELEGRAM_BOT_TOKEN, DATA_DIR, BASE_URL
@@ -598,6 +600,71 @@ async def send_notification(app: Application, chat_id: int, result: dict):
             logger.error(f"Plain text fallback also failed for {chat_id}: {e2}")
 
 
+async def send_channel_notification(app: Application, channel_id: int | str, result: dict) -> bool:
+    """
+    Post a new result announcement to a Telegram channel.
+
+    Note: Telegram does not allow Web App buttons in channels, so the
+    'View Candidates' button opens the viewer as a normal URL link instead.
+    """
+    msg = format_result_message(result)
+    keyboard_row = []
+    if BASE_URL.startswith("https://"):
+        keyboard_row.append(
+            InlineKeyboardButton("View Candidates", url=f"{BASE_URL}/results/{result['id']}")
+        )
+    keyboard_row.append(
+        InlineKeyboardButton("Visit Website", url="https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results")
+    )
+    reply_markup = InlineKeyboardMarkup([keyboard_row])
+
+    try:
+        await app.bot.send_message(
+            chat_id=channel_id,
+            text=msg,
+            parse_mode="MarkdownV2",
+            reply_markup=reply_markup,
+            disable_web_page_preview=True,
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Failed to post to Telegram channel {channel_id}: {e}")
+        try:
+            await app.bot.send_message(
+                chat_id=channel_id,
+                text=(
+                    f"🆕 New Result!\n\n"
+                    f"Position: {result['position']}\n"
+                    f"Type: {result.get('announcement', 'N/A')}\n\n"
+                    f"View: https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results"
+                ),
+            )
+            return True
+        except Exception as e2:
+            logger.error(
+                f"Plain text fallback also failed for channel {channel_id}: {e2} "
+                "(Is the bot an admin of the channel with 'Post Messages' permission?)"
+            )
+            return False
+
+
+async def channel_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle '/channelid' posted inside a channel (where the bot is an admin):
+    replies with the channel's numeric ID so it can be copied into .env.
+    """
+    chat = update.effective_chat
+    if not chat or not update.effective_message:
+        return
+    logger.info(f"📢 Channel ID requested: '{chat.title}' → {chat.id}")
+    await update.effective_message.reply_text(
+        f"📢 Channel: {chat.title}\n"
+        f"🆔 Channel ID: {chat.id}\n\n"
+        f"Add this to your .env file:\n"
+        f"TELEGRAM_CHANNEL_IDS={chat.id}"
+    )
+
+
 def build_application() -> Application:
     """Build and configure the Telegram bot application."""
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -620,6 +687,14 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("all_results", all_results_command))
     app.add_handler(CallbackQueryHandler(filter_callback_handler, pattern=r"^filter:"))
 
+    # Helper: post '/channelid' inside a channel to get its numeric ID
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/channel_?id\b"),
+            channel_id_command,
+        )
+    )
+
     # Register a global error handler so transient API errors (Conflict, NetworkError)
     # are logged cleanly instead of printing full tracebacks on every retry.
     from telegram.ext import TypeHandler
@@ -636,3 +711,31 @@ def build_application() -> Application:
     app.add_error_handler(_error_handler)
 
     return app
+
+
+if __name__ == "__main__":
+    # Quick test: `python bot.py` posts a sample announcement to TELEGRAM_CHANNEL_IDS
+    import asyncio
+    from config import TELEGRAM_CHANNEL_IDS
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(message)s")
+
+    async def _test_channel_post():
+        if not TELEGRAM_CHANNEL_IDS:
+            print("[ERROR] TELEGRAM_CHANNEL_IDS is not set in your .env file.")
+            return
+        app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        await app.initialize()
+        sample = {
+            "id": "test-preview",
+            "position": "TEST - TRAINEE PILOT CANDIDATES",
+            "announcement": "TEST NOTIFICATION - your channel setup works!",
+        }
+        try:
+            for channel_id in TELEGRAM_CHANNEL_IDS:
+                ok = await send_channel_notification(app, channel_id, sample)
+                print(f"[{'OK' if ok else 'ERROR'}] Test post to {channel_id}")
+        finally:
+            await app.shutdown()
+
+    asyncio.run(_test_channel_post())

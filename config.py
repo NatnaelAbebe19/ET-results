@@ -4,6 +4,27 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+
+def _parse_channel_ids(raw: str) -> list[int | str]:
+    """Parse comma-separated channel IDs: '@public_channel' or numeric '-100123...' IDs."""
+    ids: list[int | str] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.lstrip("-").isdigit():
+            ids.append(int(part))
+        else:
+            ids.append(part if part.startswith("@") else f"@{part}")
+    return ids
+
+
+# Telegram Channel(s) to auto-post new results to (bot must be an admin of the channel).
+# Comma-separated: @my_public_channel or -1001234567890 (private channel ID)
+TELEGRAM_CHANNEL_IDS = _parse_channel_ids(os.getenv("TELEGRAM_CHANNEL_IDS", ""))
+# Which results are posted to the channel(s): all | pilot | cabin | amt | aviation
+TELEGRAM_CHANNEL_ROLE_FILTER = os.getenv("TELEGRAM_CHANNEL_ROLE_FILTER", "all").strip().lower()
 DATABASE_URL = os.getenv("DATABASE_URL")
 CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "180"))
 ET_RESULTS_URL = "https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results"
