@@ -530,12 +530,22 @@ async def latest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         msg = format_result_message(results[0])
         viewer_url = f"{BASE_URL}/results/{results[0]['id']}"
-        keyboard = [
-            [
-                InlineKeyboardButton("View Candidates", web_app=WebAppInfo(url=viewer_url)),
+        is_group_or_channel = update.effective_chat is not None and update.effective_chat.id < 0
+        if is_group_or_channel:
+            keyboard_row = []
+            if BASE_URL.startswith("https://"):
+                keyboard_row.append(InlineKeyboardButton("View Candidates", url=viewer_url))
+            keyboard_row.append(
                 InlineKeyboardButton("Visit Website", url="https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results")
+            )
+            keyboard = [keyboard_row]
+        else:
+            keyboard = [
+                [
+                    InlineKeyboardButton("View Candidates", web_app=WebAppInfo(url=viewer_url)),
+                    InlineKeyboardButton("Visit Website", url="https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results")
+                ]
             ]
-        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             msg, 
@@ -581,7 +591,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Notification Sender ────────────────────────────────────────────────────
 
 async def send_notification(app: Application, chat_id: int, result: dict):
-    """Send a new result notification to a specific chat."""
+    """
+    Send a new result notification to a specific chat.
+
+    Telegram forbids Web App inline buttons in channels, groups, and supergroups
+    (all negative chat IDs), so negative chat IDs automatically use regular URL
+    buttons via send_channel_notification() instead of dropping to plain text.
+    """
+    if isinstance(chat_id, int) and chat_id < 0:
+        await send_channel_notification(app, chat_id, result)
+        return
+
     try:
         msg = format_result_message(result)
         viewer_url = f"{BASE_URL}/results/{result['id']}"
@@ -600,20 +620,9 @@ async def send_notification(app: Application, chat_id: int, result: dict):
             disable_web_page_preview=True,
         )
     except Exception as e:
-        logger.error(f"Failed to send notification to {chat_id}: {e}")
-        # Try plain text fallback
-        try:
-            await app.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"🆕 New Result!\n\n"
-                    f"Position: {result['position']}\n"
-                    f"Type: {result.get('announcement', 'N/A')}\n\n"
-                    f"View: https://corporate.ethiopianairlines.com/AboutEthiopian/careers/results"
-                ),
-            )
-        except Exception as e2:
-            logger.error(f"Plain text fallback also failed for {chat_id}: {e2}")
+        logger.error(f"Failed to send WebApp notification to {chat_id}: {e}")
+        # Fallback to formatted MarkdownV2 with regular URL buttons before plain text
+        await send_channel_notification(app, chat_id, result)
 
 
 async def send_channel_notification(app: Application, channel_id: int | str, result: dict) -> bool:

@@ -93,6 +93,7 @@ logging.getLogger("discord.http").setLevel(logging.WARNING)
 # even if the file state hasn't been flushed yet.
 _already_notified: set[str] = set()
 _in_quiet_mode: bool = False
+_resolved_channel_ids: dict[int | str, int] = {}
 
 
 def is_quiet_hours() -> bool:
@@ -234,8 +235,9 @@ async def check_for_new_results(app: Application, discord_bot=None):
         save_last_results(all_results)
         logger.info(f"✅ State saved. Total results tracked: {len(all_results)}")
 
+        subscribers_map = get_subscribers_with_filters()
+
         async def _notify_telegram():
-            subscribers_map = get_subscribers_with_filters()
             if not subscribers_map:
                 logger.warning("No Telegram subscribers yet.")
                 return
@@ -291,10 +293,42 @@ async def check_for_new_results(app: Application, discord_bot=None):
         async def _notify_telegram_channels():
             if not TELEGRAM_CHANNEL_IDS:
                 return
+
+            # Deduplicate: skip channels already present in the subscribers DB table
+            # so a channel configured in both places only receives one post.
+            channels_to_post: list[int | str] = []
+            seen_numeric: set[int] = set(subscribers_map.keys())
+            for channel_id in TELEGRAM_CHANNEL_IDS:
+                resolved_id: int | None = None
+                if isinstance(channel_id, int):
+                    resolved_id = channel_id
+                elif channel_id in _resolved_channel_ids:
+                    resolved_id = _resolved_channel_ids[channel_id]
+                else:
+                    try:
+                        chat = await app.bot.get_chat(channel_id)
+                        resolved_id = chat.id
+                        _resolved_channel_ids[channel_id] = resolved_id
+                    except Exception as e:
+                        logger.debug(f"Could not resolve channel {channel_id} before dedup: {e}")
+
+                if resolved_id is not None:
+                    if resolved_id in seen_numeric:
+                        logger.info(
+                            f"⏭️ Skipping duplicate channel post for {channel_id} "
+                            f"(already subscribed in database as {resolved_id})."
+                        )
+                        continue
+                    seen_numeric.add(resolved_id)
+                channels_to_post.append(channel_id)
+
+            if not channels_to_post:
+                return
+
             for result in new_results:
                 if not matches_role_filter(result, TELEGRAM_CHANNEL_ROLE_FILTER):
                     continue
-                for channel_id in TELEGRAM_CHANNEL_IDS:
+                for channel_id in channels_to_post:
                     if await send_channel_notification(app, channel_id, result):
                         logger.info(
                             f"📢 Posted to Telegram channel {channel_id}: "
